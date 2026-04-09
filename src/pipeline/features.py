@@ -156,8 +156,11 @@ def compute_pie(poss_stats: pd.DataFrame) -> pd.DataFrame:
 # STEP 3 — Star player availability
 # ============================================================================
 
-def compute_star_availability(details_df: pd.DataFrame,
-                               star_ppg_threshold: float = 20.0) -> pd.DataFrame:
+def compute_star_availability(
+    details_df: pd.DataFrame,
+    games_df: pd.DataFrame,
+    star_ppg_threshold: float = 20.0,
+) -> pd.DataFrame:
     """
     For each game-team, determine whether their star player(s) were available.
 
@@ -168,52 +171,62 @@ def compute_star_availability(details_df: pd.DataFrame,
     Returns DataFrame:
         game_id, team_id, star_available (1/0), star_count
     """
-    # Identify game → season mapping from details
-    # We need game_id → season; join from games through team game log isn't available here
-    # Instead, group by player-game and compute per-season averages
+    game_seasons = games_df[["GAME_ID", "SEASON"]].copy()
+    details = details_df.merge(game_seasons, on="GAME_ID", how="inner")
 
-    # Per-player per-season average points
-    # First, get GAME_ID and SEASON. Since details doesn't have SEASON,
-    # we use a rough proxy: the first 3 digits of GAME_ID encode the season
-    # NBA GAME_ID format: 002YYSSSS where YY = season year, SSSS = game number
-    details_df = details_df.copy()
-    details_df["season_proxy"] = (details_df["GAME_ID"] // 10000).astype(int)
-
-    # Average PPG per player per season from games in this file
+    # Use completed prior seasons only, so no information from later games
+    # in the current season can define a "star" for earlier games.
     player_season_avg = (
-        details_df[details_df["MIN"] > 0]
-        .groupby(["PLAYER_ID", "TEAM_ID", "season_proxy"])["PTS"]
+        details[details["MIN"] > 0]
+        .groupby(["PLAYER_ID", "TEAM_ID", "SEASON"])["PTS"]
         .mean()
         .reset_index()
-        .rename(columns={"PTS": "avg_pts", "season_proxy": "season"})
+        .rename(columns={"PTS": "avg_pts"})
     )
 
-    # Stars are players averaging >= threshold in a given season
-    stars = player_season_avg[player_season_avg["avg_pts"] >= star_ppg_threshold].copy()
+    prior_season_stars = player_season_avg.copy()
+    prior_season_stars["SEASON"] = prior_season_stars["SEASON"] + 1
+    prior_season_stars = prior_season_stars[
+        prior_season_stars["avg_pts"] >= star_ppg_threshold
+    ].copy()
 
-    if stars.empty:
-        # Fallback: top 2 scorers per team per season
+    if prior_season_stars.empty:
         top2 = (
             player_season_avg
             .sort_values("avg_pts", ascending=False)
-            .groupby(["TEAM_ID", "season"])
+            .groupby(["TEAM_ID", "SEASON"])
             .head(2)
+            .copy()
         )
-        stars = top2
+        top2["SEASON"] = top2["SEASON"] + 1
+        prior_season_stars = top2
 
-    # For each game, check if each star played (MIN > 0, not DNP)
-    played = details_df[details_df["is_dnp"] == 0][["GAME_ID", "TEAM_ID", "PLAYER_ID", "MIN"]].copy()
-    played["season_proxy"] = (played["GAME_ID"] // 10000).astype(int)
+    # One row per (GAME_ID, PLAYER_ID, TEAM_ID) — deduplicate before merging
+    # to prevent cartesian product explosion when a player has multiple detail
+    # rows for the same game (traded players, duplicate source rows, etc.)
+    played = (
+        details[details["is_dnp"] == 0][["GAME_ID", "TEAM_ID", "PLAYER_ID", "MIN", "SEASON"]]
+        .copy()
+        .sort_values("MIN", ascending=False)                           # keep the highest-MIN row
+        .drop_duplicates(subset=["GAME_ID", "TEAM_ID", "PLAYER_ID"])  # one row per player-game
+        .reset_index(drop=True)
+    )
 
-    star_games = stars.merge(
+    # prior_season_stars is already unique on [PLAYER_ID, TEAM_ID, SEASON]
+    # (it comes from a groupby.mean), but enforce it to be safe
+    prior_season_stars = prior_season_stars.drop_duplicates(
+        subset=["PLAYER_ID", "TEAM_ID", "SEASON"]
+    )
+
+    star_games = prior_season_stars.merge(
         played,
-        left_on=["PLAYER_ID", "TEAM_ID", "season"],
-        right_on=["PLAYER_ID", "TEAM_ID", "season_proxy"],
+        on=["PLAYER_ID", "TEAM_ID", "SEASON"],
         how="left",
     )
 
     star_game_agg = (
-        star_games.groupby(["GAME_ID", "TEAM_ID"])
+        star_games.dropna(subset=["GAME_ID"])               # drop unmatched stars (no games)
+        .groupby(["GAME_ID", "TEAM_ID"])
         .agg(
             stars_who_played=("MIN", lambda x: (x > 5).sum()),
             total_stars=("PLAYER_ID", "count"),
@@ -224,11 +237,17 @@ def compute_star_availability(details_df: pd.DataFrame,
         (star_game_agg["stars_who_played"] >= star_game_agg["total_stars"].clip(upper=1))
         .astype(int)
     )
-    star_game_agg = star_game_agg.rename(columns={
-        "GAME_ID": "game_id",
-        "TEAM_ID": "team_id",
-        "stars_who_played": "star_count",
-    })[["game_id", "team_id", "star_available", "star_count"]]
+    star_game_agg = (
+        star_game_agg
+        .rename(columns={
+            "GAME_ID": "game_id",
+            "TEAM_ID": "team_id",
+            "stars_who_played": "star_count",
+        })
+        [["game_id", "team_id", "star_available", "star_count"]]
+        .drop_duplicates(subset=["game_id", "team_id"])  # guarantee 1 row per team-game
+        .reset_index(drop=True)
+    )
 
     return star_game_agg
 
@@ -292,7 +311,6 @@ def add_possession_rolling(log: pd.DataFrame,
     Offensive Rating  = (rolling pts scored / rolling possessions) * 100
     Defensive Rating  = (rolling pts allowed / rolling opp possessions) * 100
     Pace              = rolling possessions per game
-    True Shooting%    = PTS / (2 * (FGA + 0.44 * FTA))  — proxy via game_details
     """
     # Bring in possession data and merge
     poss = poss_stats[["game_id", "team_id", "possessions", "to_total", "team_pie"]].copy()
@@ -319,6 +337,9 @@ def add_possession_rolling(log: pd.DataFrame,
     df["pace_roll_10"]           = team_grp["possessions"].transform(lambda x: _rolling(x, 10))
     df["turnovers_per_game"]     = team_grp["to_total"].transform(lambda x: _rolling(x, 10))
     df["player_impact_estimate"] = team_grp["team_pie"].transform(lambda x: _rolling(x, 10))
+    df["shooting_pct_roll_10"]   = (
+        df["fg_pct_roll_10"] * 2 + df["ft_pct_roll_10"] * 0.44
+    ) / 2.44
 
     return df
 
@@ -397,12 +418,15 @@ def add_opponent_context(log: pd.DataFrame) -> pd.DataFrame:
     This is valid (no leakage) because we are using the OPPONENT'S OWN PAST
     performance, not the outcome of THIS game.
     """
-    opp_stats = log[["game_id", "team_id", "offensive_rating", "defensive_rating"]].copy()
-    opp_stats = opp_stats.rename(columns={
-        "team_id":         "opponent_id",
-        "offensive_rating": "opponent_off_rating_10",
-        "defensive_rating": "opponent_def_rating_10",
-    })
+    opp_stats = (
+        log[["game_id", "team_id", "offensive_rating", "defensive_rating"]]
+        .drop_duplicates(subset=["game_id", "team_id"], keep="first")  # prevent self-join fan-out
+        .rename(columns={
+            "team_id":          "opponent_id",
+            "offensive_rating": "opponent_off_rating_10",
+            "defensive_rating": "opponent_def_rating_10",
+        })
+    )
 
     df = log.merge(opp_stats, on=["game_id", "opponent_id"], how="left")
     return df
@@ -417,7 +441,11 @@ def add_player_features(log: pd.DataFrame,
     """
     Merge injury counts and star availability into the team game log.
     """
-    player_cols = poss_stats[["game_id", "team_id", "injured_count"]].copy()
+    player_cols = (
+        poss_stats[["game_id", "team_id", "injured_count"]]
+        .drop_duplicates(subset=["game_id", "team_id"], keep="first")
+        .copy()
+    )
     player_cols["player_injury_flag"] = (player_cols["injured_count"] > 0).astype(int)
 
     df = log.merge(player_cols, on=["game_id", "team_id"], how="left")
@@ -442,45 +470,42 @@ def add_star_features(log: pd.DataFrame,
 # ============================================================================
 
 def add_game_style_features(games_df: pd.DataFrame,
-                              poss_stats: pd.DataFrame) -> pd.DataFrame:
+                              log: pd.DataFrame) -> pd.DataFrame:
     """
-    Add game-style features that are computed per-game (not rolling):
+    Add pre-game style features from rolling historical team form:
         pace_home, pace_away, pace_difference
-        field_goal_difference    – home FG% - away FG%
-        shooting_percentage_home/away  – True Shooting % proxy
-
-    These values come from the TEAM'S OWN HISTORICAL pace (rolling average),
-    not from the current game — no leakage.
+        shooting_pct_home, shooting_pct_away, shooting_pct_diff
     """
-    # Pace for each team in each game from poss_stats
-    home_pace = poss_stats.rename(columns={
-        "game_id": "GAME_ID",
-        "team_id": "HOME_TEAM_ID",
-        "possessions": "pace_home",
-    })[["GAME_ID", "HOME_TEAM_ID", "pace_home"]]
+    home_style = (
+        log[log["is_home"] == 1][["game_id", "team_id", "pace_roll_10", "shooting_pct_roll_10"]]
+        .drop_duplicates(subset=["game_id", "team_id"], keep="first")
+        .rename(columns={
+            "game_id": "GAME_ID",
+            "team_id": "HOME_TEAM_ID",
+            "pace_roll_10": "pace_home",
+            "shooting_pct_roll_10": "shooting_pct_home",
+        })
+    )
 
-    away_pace = poss_stats.rename(columns={
-        "game_id": "GAME_ID",
-        "team_id": "VISITOR_TEAM_ID",
-        "possessions": "pace_away",
-    })[["GAME_ID", "VISITOR_TEAM_ID", "pace_away"]]
+    away_style = (
+        log[log["is_home"] == 0][["game_id", "team_id", "pace_roll_10", "shooting_pct_roll_10"]]
+        .drop_duplicates(subset=["game_id", "team_id"], keep="first")
+        .rename(columns={
+            "game_id": "GAME_ID",
+            "team_id": "VISITOR_TEAM_ID",
+            "pace_roll_10": "pace_away",
+            "shooting_pct_roll_10": "shooting_pct_away",
+        })
+    )
 
-    df = games_df.merge(home_pace, on=["GAME_ID", "HOME_TEAM_ID"], how="left")
-    df = df.merge(away_pace, on=["GAME_ID", "VISITOR_TEAM_ID"], how="left")
+    df = games_df.merge(home_style, on=["GAME_ID", "HOME_TEAM_ID"], how="left")
+    df = df.merge(away_style, on=["GAME_ID", "VISITOR_TEAM_ID"], how="left")
 
-    df["pace_home"]      = df["pace_home"].fillna(96.0)
-    df["pace_away"]      = df["pace_away"].fillna(96.0)
+    df["pace_home"] = df["pace_home"].fillna(96.0)
+    df["pace_away"] = df["pace_away"].fillna(96.0)
+    df["shooting_pct_home"] = df["shooting_pct_home"].fillna(0.5)
+    df["shooting_pct_away"] = df["shooting_pct_away"].fillna(0.5)
     df["pace_difference"] = df["pace_home"] - df["pace_away"]
-
-    # Field goal difference (for style mismatch detection)
-    df["field_goal_difference"] = df["FG_PCT_home"] - df["FG_PCT_away"]
-
-    # True Shooting % proxy = (FG% * 2 + FT% * 0.44) / 2.44
-    df["shooting_pct_home"] = (
-        (df["FG_PCT_home"] * 2 + df["FT_PCT_home"] * 0.44) / 2.44
-    )
-    df["shooting_pct_away"] = (
-        (df["FG_PCT_away"] * 2 + df["FT_PCT_away"] * 0.44) / 2.44
-    )
+    df["shooting_pct_diff"] = df["shooting_pct_home"] - df["shooting_pct_away"]
 
     return df

@@ -33,8 +33,9 @@ Output columns (one row per game, home-team perspective):
     opp_off_rating_10_home, opp_def_rating_10_home
     opp_off_rating_10_away, opp_def_rating_10_away
 
-    # Game style
-    pace_difference, field_goal_difference, shooting_pct_home, shooting_pct_away
+    # Pre-game style
+    pace_home, pace_away, pace_difference
+    shooting_pct_home, shooting_pct_away, shooting_pct_diff
 
     # Player impact
     pie_home, pie_away
@@ -132,7 +133,7 @@ def build_master_dataset(
     # 4. STAR AVAILABILITY                                                 #
     # ------------------------------------------------------------------ #
     _log("Computing star player availability …", verbose)
-    star_avail = compute_star_availability(details)
+    star_avail = compute_star_availability(details, games)
 
     # ------------------------------------------------------------------ #
     # 5. TEAM GAME LOG + ALL ROLLING FEATURES                             #
@@ -165,7 +166,7 @@ def build_master_dataset(
     # 6. GAME-STYLE FEATURES (game-level, on games_df)                   #
     # ------------------------------------------------------------------ #
     _log("Adding game style features …", verbose)
-    games = add_game_style_features(games, poss_stats)
+    games = add_game_style_features(games, log)
 
     # ------------------------------------------------------------------ #
     # 7. PIVOT BACK TO WIDE FORMAT (one row per game)                     #
@@ -228,8 +229,16 @@ def _assemble_wide(games_df: pd.DataFrame, log: pd.DataFrame) -> pd.DataFrame:
     # Keep only columns that exist in log
     avail = [c for c in TEAM_FEATURES if c in log.columns]
 
-    home_log = log[log["is_home"] == 1][avail].copy()
-    away_log = log[log["is_home"] == 0][avail].copy()
+    home_log = (
+        log[log["is_home"] == 1][avail]
+        .drop_duplicates(subset=["game_id", "team_id"], keep="first")  # prevent merge fan-out
+        .copy()
+    )
+    away_log = (
+        log[log["is_home"] == 0][avail]
+        .drop_duplicates(subset=["game_id", "team_id"], keep="first")
+        .copy()
+    )
 
     # Rename feature columns with _home / _away suffix
     feature_cols = [c for c in avail if c not in ("game_id", "team_id")]
@@ -245,10 +254,9 @@ def _assemble_wide(games_df: pd.DataFrame, log: pd.DataFrame) -> pd.DataFrame:
         "elo_home", "elo_away", "elo_difference",
         "elo_rolling_five_home", "elo_rolling_five_away",
         "implied_prob_home",
-        # Style (already on games_df)
+        # Pre-game style (built from rolling historical features)
         "pace_home", "pace_away", "pace_difference",
-        "field_goal_difference",
-        "shooting_pct_home", "shooting_pct_away",
+        "shooting_pct_home", "shooting_pct_away", "shooting_pct_diff",
     ]].copy()
 
     base = base.rename(columns={
@@ -286,6 +294,20 @@ def _validate_and_clean(df: pd.DataFrame) -> pd.DataFrame:
 
     # Drop rows where core rolling features haven't warmed up yet
     df = df.dropna(subset=["last_10_win_rate_home", "last_10_win_rate_away"])
+
+    # ── Safety deduplication ─────────────────────────────────────────────────
+    # game_id must be unique (one row per game). If duplicates exist, keep the
+    # first occurrence — they are identical rows caused by upstream fan-out joins.
+    before = len(df)
+    df = df.drop_duplicates(subset=["game_id"], keep="first")
+    after = len(df)
+    if before != after:
+        import warnings
+        warnings.warn(
+            f"Dropped {before - after} duplicate game_id rows in _validate_and_clean. "
+            "Check upstream join logic in compute_star_availability or _assemble_wide.",
+            stacklevel=2,
+        )
 
     # Cap ELO difference (rare outliers after long win/loss streaks)
     df["elo_difference"] = df["elo_difference"].clip(-400, 400)

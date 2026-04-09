@@ -72,6 +72,11 @@ def load_games(path: str = None) -> pd.DataFrame:
 
     # Drop rows where score is unknown (future/cancelled games)
     df = df.dropna(subset=["PTS_home", "PTS_away", "HOME_TEAM_WINS"])
+
+    # Deduplicate at source — raw CSV has 29 duplicate GAME_IDs
+    # Keep first occurrence (rows are identical for the duplicates in this dataset)
+    df = df.drop_duplicates(subset=["GAME_ID"], keep="first")
+
     df = df.sort_values("GAME_DATE_EST").reset_index(drop=True)
     df["HOME_TEAM_WINS"] = df["HOME_TEAM_WINS"].astype(int)
     return df
