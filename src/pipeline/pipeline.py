@@ -72,6 +72,7 @@ from .features import (
     add_possession_rolling,
     add_rest_fatigue,
     add_coaching_score,
+    add_season_pressure,
     add_opponent_context,
     add_player_features,
     add_star_features,
@@ -153,6 +154,9 @@ def build_master_dataset(
     _log("Adding coaching adaptability score …", verbose)
     log = add_coaching_score(log)
 
+    _log("Adding season pressure features …", verbose)
+    log = add_season_pressure(log)
+
     _log("Adding opponent context features …", verbose)
     log = add_opponent_context(log)
 
@@ -219,11 +223,13 @@ def _assemble_wide(games_df: pd.DataFrame, log: pd.DataFrame) -> pd.DataFrame:
         # player impact
         "player_impact_estimate",
         "player_injury_flag", "injured_count",
-        "star_available", "star_count",
+        "star_available", "star_count", "star_points_lost",
         # fatigue
-        "rest_days", "back_to_back", "fatigue_load_index",
+        "rest_days", "back_to_back", "back_to_back_road", "fatigue_load_index",
         # coaching
         "coaching_adaptability_score",
+        # situational
+        "season_pressure",
     ]
 
     # Keep only columns that exist in log

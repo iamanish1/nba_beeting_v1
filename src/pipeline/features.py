@@ -224,12 +224,25 @@ def compute_star_availability(
         how="left",
     )
 
+    # Work only on rows where the game actually happened (GAME_ID is known)
+    star_games_known = star_games[star_games["GAME_ID"].notna()].copy()
+
+    # Mark whether each star played (MIN > 5 minutes)
+    star_games_known["star_played"] = (star_games_known["MIN"].fillna(0) > 5).astype(int)
+
+    # star_points_lost: sum of avg_pts for stars who did NOT play
+    # Uses prior-season avg_pts — no leakage (defined from previous season)
+    star_games_known["pts_lost"] = (
+        star_games_known["avg_pts"] * (1 - star_games_known["star_played"])
+    )
+
     star_game_agg = (
-        star_games.dropna(subset=["GAME_ID"])               # drop unmatched stars (no games)
+        star_games_known
         .groupby(["GAME_ID", "TEAM_ID"])
         .agg(
-            stars_who_played=("MIN", lambda x: (x > 5).sum()),
+            stars_who_played=("star_played", "sum"),
             total_stars=("PLAYER_ID", "count"),
+            star_points_lost=("pts_lost", "sum"),
         )
         .reset_index()
     )
@@ -244,7 +257,7 @@ def compute_star_availability(
             "TEAM_ID": "team_id",
             "stars_who_played": "star_count",
         })
-        [["game_id", "team_id", "star_available", "star_count"]]
+        [["game_id", "team_id", "star_available", "star_count", "star_points_lost"]]
         .drop_duplicates(subset=["game_id", "team_id"])  # guarantee 1 row per team-game
         .reset_index(drop=True)
     )
@@ -363,6 +376,12 @@ def add_rest_fatigue(log: pd.DataFrame) -> pd.DataFrame:
     )
     df["back_to_back"] = (df["rest_days"] == 1).astype(int)
 
+    # Road back-to-back is significantly worse than home back-to-back:
+    # team also travelled overnight, slept in a hotel, adjusted to new arena
+    df["back_to_back_road"] = (
+        (df["back_to_back"] == 1) & (df["is_home"] == 0)
+    ).astype(int)
+
     # Fatigue: count games played in prior 7 calendar days
     def games_last_n_days(group, n=7):
         dates = group["game_date"].values
@@ -405,6 +424,45 @@ def add_coaching_score(log: pd.DataFrame, window: int = 20) -> pd.DataFrame:
             )
         )
     )
+    return df
+
+
+def add_season_pressure(log: pd.DataFrame) -> pd.DataFrame:
+    """
+    Late-season playoff pressure flag.
+
+    season_pressure = 1 when ALL of:
+        - Game is in the last 20% of that team's season schedule  (March/April)
+        - Team's rolling win rate is between 40%–60%  (on the playoff bubble)
+
+    Captures the extra effort and focus bubble teams show when every game
+    has direct playoff seeding implications.
+
+    No leakage: win rate computed with shift(1) — current game result excluded.
+    """
+    df = log.copy().sort_values(["team_id", "season", "game_date"])
+
+    # Game number within season per team (1-indexed)
+    df["_game_num"] = df.groupby(["team_id", "season"]).cumcount() + 1
+    df["_total_games"] = df.groupby(["team_id", "season"])["game_id"].transform("count")
+    df["_season_progress"] = df["_game_num"] / df["_total_games"]
+
+    # Rolling win rate up to (but NOT including) the current game — shift(1)
+    df["_rolling_win_rate"] = (
+        df.groupby(["team_id", "season"])["won"]
+        .transform(lambda x: x.shift(1).expanding(min_periods=5).mean())
+    )
+
+    df["season_pressure"] = (
+        (df["_season_progress"] >= 0.80) &
+        (df["_rolling_win_rate"] >= 0.40) &
+        (df["_rolling_win_rate"] <= 0.60)
+    ).astype(int)
+
+    # Fill NaN (early season games with < 5 prior games) → 0
+    df["season_pressure"] = df["season_pressure"].fillna(0).astype(int)
+
+    df = df.drop(columns=["_game_num", "_total_games", "_season_progress", "_rolling_win_rate"])
     return df
 
 
@@ -458,10 +516,12 @@ def add_star_features(log: pd.DataFrame,
                        star_availability: pd.DataFrame) -> pd.DataFrame:
     """
     Merge star player availability into the team game log.
+    Includes star_points_lost — quantified scoring impact of missing stars.
     """
     df = log.merge(star_availability, on=["game_id", "team_id"], how="left")
-    df["star_available"] = df["star_available"].fillna(1).astype(int)  # default: available
-    df["star_count"]     = df["star_count"].fillna(0).astype(int)
+    df["star_available"]    = df["star_available"].fillna(1).astype(int)   # default: available
+    df["star_count"]        = df["star_count"].fillna(0).astype(int)
+    df["star_points_lost"]  = df["star_points_lost"].fillna(0.0)           # default: no stars missing
     return df
 
 

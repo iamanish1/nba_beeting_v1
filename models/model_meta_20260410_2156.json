@@ -1,0 +1,23 @@
+{
+  "timestamp": "20260410_2156",
+  "train_seasons": "2003-2021",
+  "valid_seasons": "2022-2023",
+  "test_season": "2024",
+  "n_features": 76,
+  "n_train_rows": 25929,
+  "test_accuracy": 0.6337,
+  "test_auc": 0.7056,
+  "test_logloss": 0.6228,
+  "best_iteration": 676,
+  "best_params": {
+    "subsample": 0.6,
+    "reg_lambda": 1.0,
+    "reg_alpha": 1.0,
+    "n_estimators": 2000,
+    "min_child_weight": 3,
+    "max_depth": 4,
+    "learning_rate": 0.005,
+    "gamma": 0.2,
+    "colsample_bytree": 0.5
+  }
+}
