@@ -63,6 +63,7 @@ from typing import Optional
 
 from .ingest   import load_all
 from .elo      import compute_elo, compute_elo_rolling_five
+from .odds     import build_odds_features
 from .features import (
     build_team_game_log,
     compute_possession_stats,
@@ -76,6 +77,7 @@ from .features import (
     add_opponent_context,
     add_player_features,
     add_star_features,
+    add_ranking_features,
     add_game_style_features,
 )
 
@@ -172,21 +174,34 @@ def build_master_dataset(
     _log("Adding game style features …", verbose)
     games = add_game_style_features(games, log)
 
+    _log("Adding ranking / standings features …", verbose)
+    ranking = raw["ranking"]
+    games = add_ranking_features(games, ranking)
+
     # ------------------------------------------------------------------ #
-    # 7. PIVOT BACK TO WIDE FORMAT (one row per game)                     #
+    # 7. BETTING MARKET ODDS (Phase 2)                                     #
+    # ------------------------------------------------------------------ #
+    _log("Merging real betting market odds …", verbose)
+    odds_features = build_odds_features(games, data_dir=base)
+    games = games.merge(odds_features, on="GAME_ID", how="left")
+    n_with_odds = games["has_market_odds"].sum()
+    _log(f"  Games with real odds: {int(n_with_odds):,} / {len(games):,}", verbose)
+
+    # ------------------------------------------------------------------ #
+    # 8. PIVOT BACK TO WIDE FORMAT (one row per game)                     #
     # ------------------------------------------------------------------ #
     _log("Assembling master dataset …", verbose)
     master = _assemble_wide(games, log)
 
     # ------------------------------------------------------------------ #
-    # 8. BETTING MARKET PLACEHOLDER                                        #
+    # 9. BETTING MARKET FEATURES                                           #
     # ------------------------------------------------------------------ #
-    # implied_prob_home already in games (from ELO)
-    # line_movement requires external betting API — placeholder NaN
+    # line_movement = closing − opening implied prob (sharp-money signal)
+    # Opening lines not in our datasets; leave as NaN placeholder
     master["line_movement"] = np.nan
 
     # ------------------------------------------------------------------ #
-    # 9. CLEAN UP & VALIDATE                                               #
+    # 10. CLEAN UP & VALIDATE                                              #
     # ------------------------------------------------------------------ #
     master = _validate_and_clean(master)
 
@@ -224,8 +239,8 @@ def _assemble_wide(games_df: pd.DataFrame, log: pd.DataFrame) -> pd.DataFrame:
         "player_impact_estimate",
         "player_injury_flag", "injured_count",
         "star_available", "star_count", "star_points_lost",
-        # fatigue
-        "rest_days", "back_to_back", "back_to_back_road", "fatigue_load_index",
+        # fatigue — back_to_back_road omitted: always 0 for home team (home=is_home=1)
+        "rest_days", "back_to_back", "fatigue_load_index",
         # coaching
         "coaching_adaptability_score",
         # situational
@@ -252,6 +267,17 @@ def _assemble_wide(games_df: pd.DataFrame, log: pd.DataFrame) -> pd.DataFrame:
     away_log = away_log.rename(columns={c: f"{c}_away" for c in feature_cols})
 
     # Build base game frame
+    ranking_cols = [c for c in [
+        "home_win_pct_home", "road_win_pct_home", "games_played_home",
+        "home_win_pct_away", "road_win_pct_away", "games_played_away",
+    ] if c in games_df.columns]
+
+    # Collect odds columns if they were added by build_odds_features
+    odds_cols = [c for c in [
+        "home_implied_prob_close", "away_implied_prob_close",
+        "home_spread_close", "market_elo_diff", "has_market_odds",
+    ] if c in games_df.columns]
+
     base = games_df[[
         "GAME_ID", "GAME_DATE_EST", "SEASON",
         "HOME_TEAM_ID", "VISITOR_TEAM_ID",
@@ -263,7 +289,7 @@ def _assemble_wide(games_df: pd.DataFrame, log: pd.DataFrame) -> pd.DataFrame:
         # Pre-game style (built from rolling historical features)
         "pace_home", "pace_away", "pace_difference",
         "shooting_pct_home", "shooting_pct_away", "shooting_pct_diff",
-    ]].copy()
+    ] + ranking_cols + odds_cols].copy()
 
     base = base.rename(columns={
         "GAME_ID":          "game_id",

@@ -107,12 +107,10 @@ def load_game_details(path: str = None) -> pd.DataFrame:
         if col in df.columns:
             df[col] = pd.to_numeric(df[col], errors="coerce").fillna(0.0)
 
-    # Injury/DNP flag: COMMENT is non-null when player did not play
-    df["is_dnp"] = (
-        df["COMMENT"].notna()
-        & (df["COMMENT"].str.strip() != "")
-        & (df["MIN"] == 0)
-    ).astype(int)
+    # Injury/DNP flag: any player with MIN=0 did not play
+    # Previous logic required COMMENT to be non-null, missing 197 silent DNPs.
+    # Simpler and complete: if a player appears in details with 0 minutes, they did not play.
+    df["is_dnp"] = (df["MIN"] == 0).astype(int)
 
     return df
 

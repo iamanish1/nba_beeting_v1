@@ -164,32 +164,48 @@ def compute_star_availability(
     """
     For each game-team, determine whether their star player(s) were available.
 
-    Star definition: players who averaged >= star_ppg_threshold PPG
-    in the PREVIOUS season (computed from all games in details_df up to that season).
-    Using previous-season averages avoids leakage.
+    FIX (Phase 1): Previous logic only marked a star as absent if they appeared
+    in game_details with is_dnp=1. But truly injured players who don't travel
+    are NEVER inserted into game_details at all — so they were silently assumed
+    available (default=1), causing star_available=0 to fire on only 71 games.
+
+    New logic (correct):
+        Build the set of players who ACTUALLY PLAYED (MIN > 5) per game-team.
+        For each expected star, check if their PLAYER_ID is in that set.
+        If NOT in the set → they did not play → star absent.
+        This catches both DNP rows AND players completely absent from details.
+
+    Star definition: averaged >= star_ppg_threshold PPG in the PREVIOUS season.
+    Using prior-season averages avoids leakage.
 
     Returns DataFrame:
-        game_id, team_id, star_available (1/0), star_count
+        game_id, team_id, star_available (1/0), star_count, star_points_lost
     """
     game_seasons = games_df[["GAME_ID", "SEASON"]].copy()
     details = details_df.merge(game_seasons, on="GAME_ID", how="inner")
 
-    # Use completed prior seasons only, so no information from later games
-    # in the current season can define a "star" for earlier games.
+    # ── Step 1: Identify stars from PRIOR season ──────────────────────────────
+    # Only use players who actually played meaningful minutes (MIN > 5)
+    # to avoid noise from garbage-time appearances inflating averages.
     player_season_avg = (
-        details[details["MIN"] > 0]
+        details[details["MIN"] > 5]
         .groupby(["PLAYER_ID", "TEAM_ID", "SEASON"])["PTS"]
-        .mean()
+        .agg(["mean", "count"])
         .reset_index()
-        .rename(columns={"PTS": "avg_pts"})
+        .rename(columns={"mean": "avg_pts", "count": "games_played"})
     )
 
-    prior_season_stars = player_season_avg.copy()
-    prior_season_stars["SEASON"] = prior_season_stars["SEASON"] + 1
-    prior_season_stars = prior_season_stars[
-        prior_season_stars["avg_pts"] >= star_ppg_threshold
+    # Shift season forward by 1: a star in season S is expected in season S+1
+    prior_season_stars = player_season_avg[
+        (player_season_avg["avg_pts"] >= star_ppg_threshold) &
+        (player_season_avg["games_played"] >= 20)   # played enough games to be reliable
     ].copy()
+    prior_season_stars["SEASON"] = prior_season_stars["SEASON"] + 1
+    prior_season_stars = prior_season_stars.drop_duplicates(
+        subset=["PLAYER_ID", "TEAM_ID", "SEASON"]
+    )
 
+    # Fallback: if threshold finds no stars, take top 2 per team per season
     if prior_season_stars.empty:
         top2 = (
             player_season_avg
@@ -201,43 +217,55 @@ def compute_star_availability(
         top2["SEASON"] = top2["SEASON"] + 1
         prior_season_stars = top2
 
-    # One row per (GAME_ID, PLAYER_ID, TEAM_ID) — deduplicate before merging
-    # to prevent cartesian product explosion when a player has multiple detail
-    # rows for the same game (traded players, duplicate source rows, etc.)
-    played = (
-        details[details["is_dnp"] == 0][["GAME_ID", "TEAM_ID", "PLAYER_ID", "MIN", "SEASON"]]
-        .copy()
-        .sort_values("MIN", ascending=False)                           # keep the highest-MIN row
-        .drop_duplicates(subset=["GAME_ID", "TEAM_ID", "PLAYER_ID"])  # one row per player-game
-        .reset_index(drop=True)
+    # ── Step 2: Build set of players who ACTUALLY PLAYED per game-team ────────
+    # A player "played" if they appear in details with MIN > 5.
+    # This is the key fix: we check presence in the played set,
+    # not existence of a DNP row.
+    players_who_played = (
+        details[details["MIN"] > 5]
+        .drop_duplicates(subset=["GAME_ID", "TEAM_ID", "PLAYER_ID"])
+        .groupby(["GAME_ID", "TEAM_ID"])["PLAYER_ID"]
+        .apply(set)
+        .reset_index()
+        .rename(columns={"PLAYER_ID": "played_set"})
     )
 
-    # prior_season_stars is already unique on [PLAYER_ID, TEAM_ID, SEASON]
-    # (it comes from a groupby.mean), but enforce it to be safe
-    prior_season_stars = prior_season_stars.drop_duplicates(
-        subset=["PLAYER_ID", "TEAM_ID", "SEASON"]
+    # ── Step 3: For each expected star, check if they are in the played set ───
+    # Cross every expected star with every game in their expected season
+    all_games_per_season = (
+        details[["GAME_ID", "TEAM_ID", "SEASON"]]
+        .drop_duplicates(subset=["GAME_ID", "TEAM_ID"])
     )
 
-    star_games = prior_season_stars.merge(
-        played,
-        on=["PLAYER_ID", "TEAM_ID", "SEASON"],
-        how="left",
+    # Join stars to the games their team played in their expected season
+    star_game_cross = prior_season_stars.merge(
+        all_games_per_season,
+        on=["TEAM_ID", "SEASON"],
+        how="inner"
     )
 
-    # Work only on rows where the game actually happened (GAME_ID is known)
-    star_games_known = star_games[star_games["GAME_ID"].notna()].copy()
-
-    # Mark whether each star played (MIN > 5 minutes)
-    star_games_known["star_played"] = (star_games_known["MIN"].fillna(0) > 5).astype(int)
-
-    # star_points_lost: sum of avg_pts for stars who did NOT play
-    # Uses prior-season avg_pts — no leakage (defined from previous season)
-    star_games_known["pts_lost"] = (
-        star_games_known["avg_pts"] * (1 - star_games_known["star_played"])
+    # Join in who actually played
+    star_game_cross = star_game_cross.merge(
+        players_who_played,
+        on=["GAME_ID", "TEAM_ID"],
+        how="left"
     )
 
+    # Star played = their PLAYER_ID is in the set of players with MIN > 5
+    star_game_cross["star_played"] = star_game_cross.apply(
+        lambda r: int(r["PLAYER_ID"] in r["played_set"])
+        if isinstance(r["played_set"], set) else 0,
+        axis=1
+    )
+
+    # Points lost = avg_pts of stars who did NOT play
+    star_game_cross["pts_lost"] = (
+        star_game_cross["avg_pts"] * (1 - star_game_cross["star_played"])
+    )
+
+    # ── Step 4: Aggregate to one row per game-team ────────────────────────────
     star_game_agg = (
-        star_games_known
+        star_game_cross
         .groupby(["GAME_ID", "TEAM_ID"])
         .agg(
             stars_who_played=("star_played", "sum"),
@@ -246,10 +274,12 @@ def compute_star_availability(
         )
         .reset_index()
     )
+
+    # star_available = 1 if at least one star played, 0 if all stars were absent
     star_game_agg["star_available"] = (
-        (star_game_agg["stars_who_played"] >= star_game_agg["total_stars"].clip(upper=1))
-        .astype(int)
+        (star_game_agg["stars_who_played"] >= 1).astype(int)
     )
+
     star_game_agg = (
         star_game_agg
         .rename(columns={
@@ -258,7 +288,7 @@ def compute_star_availability(
             "stars_who_played": "star_count",
         })
         [["game_id", "team_id", "star_available", "star_count", "star_points_lost"]]
-        .drop_duplicates(subset=["game_id", "team_id"])  # guarantee 1 row per team-game
+        .drop_duplicates(subset=["game_id", "team_id"])
         .reset_index(drop=True)
     )
 
@@ -526,7 +556,111 @@ def add_star_features(log: pd.DataFrame,
 
 
 # ============================================================================
-# STEP 6 — Pace & style features (game-level, from games_df)
+# STEP 6 — Ranking-based standings features (game-level)
+# ============================================================================
+
+def add_ranking_features(games_df: pd.DataFrame,
+                          ranking_df: pd.DataFrame) -> pd.DataFrame:
+    """
+    Join pre-game standings data from ranking.csv onto each game.
+
+    Uses the ranking snapshot from the day BEFORE each game — no leakage.
+    ranking.csv has a daily snapshot for every team, so we use merge_asof
+    to find the most recent snapshot strictly before game_date.
+
+    New columns added to games_df:
+        home_win_pct_home   – home team's HOME record win% going into this game
+        road_win_pct_home   – home team's ROAD record win% going into this game
+        home_win_pct_away   – away team's HOME record win% going into this game
+        road_win_pct_away   – away team's ROAD record win% going into this game
+        games_played_home   – games the home team has played this season
+        games_played_away   – games the away team has played this season
+
+    Why home/road split matters:
+        A team with 60% overall win rate could be 80% at home / 40% on road.
+        The current model cannot distinguish this. Home/road splits are
+        strong predictors of performance in the correct context.
+    """
+
+    def _parse_record(rec):
+        """Parse '25-3' → 0.893, '0-0' → 0.5 (neutral prior)."""
+        if pd.isna(rec) or str(rec).strip() == "0-0":
+            return 0.5
+        try:
+            w, l = str(rec).strip().split("-")
+            total = int(w) + int(l)
+            return int(w) / total if total > 0 else 0.5
+        except Exception:
+            return 0.5
+
+    ranking = ranking_df.copy()
+    ranking["home_win_pct"] = ranking["HOME_RECORD"].apply(_parse_record)
+    ranking["road_win_pct"] = ranking["ROAD_RECORD"].apply(_parse_record)
+    ranking["games_played"] = ranking["G"]
+    ranking = ranking[["TEAM_ID", "STANDINGSDATE", "home_win_pct", "road_win_pct", "games_played"]]
+    ranking = ranking.sort_values("STANDINGSDATE").reset_index(drop=True)
+
+    # Prepare games with date as datetime
+    games = games_df.copy()
+    games["_game_date"] = pd.to_datetime(games["GAME_DATE_EST"])
+
+    def _get_pregame_ranking(team_col, suffix):
+        """
+        For each game, find the ranking snapshot on the day BEFORE the game
+        for the team in team_col. Returns a DataFrame with suffix columns.
+        """
+        team_games = games[["GAME_ID", "_game_date", team_col]].copy()
+        team_games = team_games.rename(columns={team_col: "TEAM_ID"})
+        # Subtract 1 day: use snapshot strictly BEFORE game date to avoid leakage.
+        # ranking.csv snapshots are updated after games finish each day, so the
+        # snapshot for Jan 15 already includes Jan 15 results — using it for a
+        # Jan 15 game would leak today's outcomes into the feature.
+        team_games["_lookup_date"] = team_games["_game_date"] - pd.Timedelta(days=1)
+        team_games = team_games.sort_values("_lookup_date")
+
+        result = pd.merge_asof(
+            team_games,
+            ranking,
+            left_on="_lookup_date",
+            right_on="STANDINGSDATE",
+            by="TEAM_ID",
+            direction="backward",       # most recent snapshot strictly before game date
+            tolerance=pd.Timedelta("30 days"),  # safety: ignore if > 30 days stale
+        )
+
+        result = result.rename(columns={
+            "home_win_pct":  f"home_win_pct_{suffix}",
+            "road_win_pct":  f"road_win_pct_{suffix}",
+            "games_played":  f"games_played_{suffix}",
+        })[[
+            "GAME_ID",
+            f"home_win_pct_{suffix}",
+            f"road_win_pct_{suffix}",
+            f"games_played_{suffix}",
+        ]]
+        # restore original sort order
+        result = result.sort_values("GAME_ID").reset_index(drop=True)
+        return result
+
+    home_ranking = _get_pregame_ranking("HOME_TEAM_ID",    "home")
+    away_ranking = _get_pregame_ranking("VISITOR_TEAM_ID", "away")
+
+    games = games.merge(home_ranking, on="GAME_ID", how="left")
+    games = games.merge(away_ranking, on="GAME_ID", how="left")
+
+    # Fill missing (first games of season before any snapshot) with neutral 0.5
+    for col in ["home_win_pct_home", "road_win_pct_home",
+                "home_win_pct_away", "road_win_pct_away"]:
+        games[col] = games[col].fillna(0.5)
+    for col in ["games_played_home", "games_played_away"]:
+        games[col] = games[col].fillna(0).astype(int)
+
+    games = games.drop(columns=["_game_date"])
+    return games
+
+
+# ============================================================================
+# STEP 7 — Pace & style features (game-level, from games_df)
 # ============================================================================
 
 def add_game_style_features(games_df: pd.DataFrame,
