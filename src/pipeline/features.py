@@ -342,6 +342,30 @@ def add_rolling_performance(log: pd.DataFrame) -> pd.DataFrame:
     df["last_10_win_rate"] = g["won"].transform(lambda x: _rolling(x, 10))
     df["net_rating_roll_10"] = g["net_pts"].transform(lambda x: _rolling(x, 10))
 
+    # --- Win streak (signed: +N = N-game win streak, -N = N-game losing streak) ---
+    # shift(1) enforces no-leakage: streak going INTO the current game
+    def _win_streak(won_series: pd.Series) -> pd.Series:
+        streak = []
+        s = 0
+        for w in won_series:
+            if w == 1:
+                s = max(1, s + 1)
+            else:
+                s = min(-1, s - 1)
+            streak.append(s)
+        return pd.Series(streak, index=won_series.index, dtype=float)
+
+    df["win_streak"] = (
+        g["won"]
+        .transform(lambda x: _win_streak(x).shift(1))
+    )
+
+    # --- Exponentially weighted win rate (span=5: game-1 ago weighs ~2× game-5 ago) ---
+    # Captures directional momentum better than simple rolling average
+    df["ewm_win_rate_5"] = g["won"].transform(
+        lambda x: x.shift(1).ewm(span=5, min_periods=3).mean()
+    )
+
     return df
 
 
@@ -446,14 +470,12 @@ def add_coaching_score(log: pd.DataFrame, window: int = 20) -> pd.DataFrame:
     """
     df = log.copy().sort_values(["team_id", "game_date"])
 
-    df["coaching_adaptability_score"] = (
+    rolling_std = (
         df.groupby("team_id")["net_pts"]
-        .transform(
-            lambda x: 1.0 / (
-                1.0 + x.shift(1).rolling(window, min_periods=5).std().fillna(10.0)
-            )
-        )
+        .transform(lambda x: x.shift(1).rolling(window, min_periods=5).std())
     )
+    df["coaching_adaptability_score_missing"] = rolling_std.isna().astype(int)
+    df["coaching_adaptability_score"] = 1.0 / (1.0 + rolling_std)
     return df
 
 
@@ -549,9 +571,9 @@ def add_star_features(log: pd.DataFrame,
     Includes star_points_lost — quantified scoring impact of missing stars.
     """
     df = log.merge(star_availability, on=["game_id", "team_id"], how="left")
+    df["star_points_lost_missing"] = df["star_points_lost"].isna().astype(int)
     df["star_available"]    = df["star_available"].fillna(1).astype(int)   # default: available
     df["star_count"]        = df["star_count"].fillna(0).astype(int)
-    df["star_points_lost"]  = df["star_points_lost"].fillna(0.0)           # default: no stars missing
     return df
 
 

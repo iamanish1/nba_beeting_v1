@@ -1,0 +1,30 @@
+{
+  "timestamp": "20260414_2325",
+  "train_seasons": "2003-2021",
+  "valid_seasons": "2022-2023",
+  "test_season": "2024",
+  "n_features": 110,
+  "n_train_rows": 25929,
+  "test_auc_xgb": 0.7375,
+  "test_auc_lgbm": 0.7317,
+  "test_auc_stack": 0.736,
+  "best_model": "XGB calibrated",
+  "best_accuracy": 0.6724,
+  "xgb_best_iter": 250,
+  "lgbm_best_iter": 160,
+  "stacker_coefs": {
+    "xgb": 3.3477,
+    "lgbm": 1.4161
+  },
+  "best_params_xgb": {
+    "n_estimators": 1000,
+    "max_depth": 4,
+    "learning_rate": 0.02,
+    "subsample": 0.8,
+    "colsample_bytree": 0.7,
+    "min_child_weight": 3,
+    "gamma": 0.1,
+    "reg_alpha": 0.1,
+    "reg_lambda": 1.5
+  }
+}

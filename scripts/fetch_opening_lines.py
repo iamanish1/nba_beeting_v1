@@ -46,6 +46,7 @@ import requests
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 DATA_DIR     = PROJECT_ROOT / "data"
 OUTPUT_PATH  = DATA_DIR / "nba_opening_lines.csv"
+SBRO_DIR     = DATA_DIR / "sbro"
 
 # ── Team name → NBA TEAM_ID (covers SBRO abbreviations + full names) ───────
 # SBRO uses city-name or short-name conventions that differ from NBA API.
@@ -108,6 +109,12 @@ def _sbro_url(season_start: int) -> str:
         f"https://www.sportsbookreviewsonline.com"
         f"/scoresoddsarchives/nba/{filename}"
     )
+
+
+def _local_sbro_path(season_start: int, sbro_dir: Path = SBRO_DIR) -> Path:
+    """Return the expected local SBRO Excel path for a season."""
+    season_end_short = str(season_start + 1)[-2:]
+    return sbro_dir / f"nba_odds_{season_start}-{season_end_short}.xlsx"
 
 
 def _parse_sbro_excel(raw_bytes: bytes, season_start: int) -> pd.DataFrame:
@@ -314,6 +321,42 @@ def fetch_sbro(seasons: list[int]) -> pd.DataFrame:
     return pd.concat(all_dfs, ignore_index=True) if all_dfs else pd.DataFrame()
 
 
+def fetch_sbro_local_first(seasons: list[int]) -> pd.DataFrame:
+    """
+    Load local SBRO Excel files from data/sbro/ first, then fall back to
+    the legacy remote URL fetcher for any missing seasons.
+    """
+    all_dfs = []
+    missing_remote = []
+
+    for yr in seasons:
+        local_path = _local_sbro_path(yr)
+        if local_path.exists():
+            print(f"  Loading local SBRO {yr}-{str(yr+1)[-2:]} ... {local_path}")
+            try:
+                parsed = _parse_sbro_excel(local_path.read_bytes(), yr)
+            except OSError as e:
+                print(f"    Failed to read local file: {e}")
+                missing_remote.append(yr)
+                continue
+
+            if parsed.empty:
+                print("    Local parse returned 0 rows - trying remote URL")
+                missing_remote.append(yr)
+            else:
+                all_dfs.append(parsed)
+                print(f"    OK - {len(parsed):,} games parsed from local file")
+        else:
+            missing_remote.append(yr)
+
+    if missing_remote:
+        remote_df = fetch_sbro(missing_remote)
+        if not remote_df.empty:
+            all_dfs.append(remote_df)
+
+    return pd.concat(all_dfs, ignore_index=True) if all_dfs else pd.DataFrame()
+
+
 # ── The Odds API source ─────────────────────────────────────────────────────
 
 def fetch_odds_api(api_key: str, seasons: list[int]) -> pd.DataFrame:
@@ -426,7 +469,7 @@ Examples:
 
     if args.source in ("sbro", "auto"):
         print("Trying sportsbookreviewsonline.com (SBRO)...")
-        df = fetch_sbro(args.seasons)
+        df = fetch_sbro_local_first(args.seasons)
         if df.empty:
             print("  SBRO returned no data.")
         else:
@@ -444,10 +487,10 @@ Examples:
         print()
         print("No opening lines data fetched.")
         print("Manual options:")
-        print("  1. Download NBA odds Excel files from sportsbookreviewsonline.com")
-        print("     and place them in data/sbro/nba_odds_{YEAR}-{YY}.xlsx")
-        print("  2. Sign up for The Odds API at https://the-odds-api.com")
-        print("     and re-run with --source oddsapi --api-key YOUR_KEY")
+        print("  1. Put local SBRO Excel files in data/sbro/")
+        print("     using names like nba_odds_2018-19.xlsx")
+        print("  2. Or use The Odds API:")
+        print("     python scripts/fetch_opening_lines.py --source oddsapi --api-key YOUR_KEY")
         sys.exit(1)
 
     # ── Deduplicate ────────────────────────────────────────────────────────

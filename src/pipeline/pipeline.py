@@ -244,6 +244,7 @@ def _assemble_wide(games_df: pd.DataFrame, log: pd.DataFrame) -> pd.DataFrame:
         "ppg_10", "opp_ppg_10",
         "fg_pct_roll_10", "ft_pct_roll_10", "fg3_pct_roll_10",
         "last_5_win_rate", "last_10_win_rate",
+        "win_streak", "ewm_win_rate_5",
         "offensive_rating", "defensive_rating", "net_rating",
         "turnovers_per_game",
         # opponent context
@@ -251,11 +252,11 @@ def _assemble_wide(games_df: pd.DataFrame, log: pd.DataFrame) -> pd.DataFrame:
         # player impact
         "player_impact_estimate",
         "player_injury_flag", "injured_count",
-        "star_available", "star_count", "star_points_lost",
+        "star_available", "star_count", "star_points_lost", "star_points_lost_missing",
         # fatigue — back_to_back_road omitted: always 0 for home team (home=is_home=1)
         "rest_days", "back_to_back", "fatigue_load_index",
         # coaching
-        "coaching_adaptability_score",
+        "coaching_adaptability_score", "coaching_adaptability_score_missing",
         # situational
         "season_pressure",
     ]
