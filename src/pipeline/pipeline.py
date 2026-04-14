@@ -79,6 +79,8 @@ from .features import (
     add_star_features,
     add_ranking_features,
     add_game_style_features,
+    add_h2h_features,
+    add_home_court_features,
 )
 
 _DEFAULT_DATA_DIR = Path(__file__).resolve().parents[2] / "data"
@@ -178,6 +180,12 @@ def build_master_dataset(
     ranking = raw["ranking"]
     games = add_ranking_features(games, ranking)
 
+    _log("Adding head-to-head matchup features …", verbose)
+    games = add_h2h_features(games)
+
+    _log("Adding home court advantage features …", verbose)
+    games = add_home_court_features(games)
+
     # ------------------------------------------------------------------ #
     # 7. BETTING MARKET ODDS (Phase 2)                                     #
     # ------------------------------------------------------------------ #
@@ -196,9 +204,14 @@ def build_master_dataset(
     # ------------------------------------------------------------------ #
     # 9. BETTING MARKET FEATURES                                           #
     # ------------------------------------------------------------------ #
-    # line_movement = closing − opening implied prob (sharp-money signal)
-    # Opening lines not in our datasets; leave as NaN placeholder
-    master["line_movement"] = np.nan
+    # Phase 1 sharp-money features (sharp_signal_home, book_consensus_std)
+    # are already in master via build_odds_features → _assemble_wide.
+    #
+    # True line_movement = Pinnacle_close_implied_prob − nba_odds_open_implied_prob
+    # Populated for 2007-2017 games where both sources overlap.
+    # NaN for 2018+ (no Pinnacle closing available); XGBoost handles NaN natively.
+    if "line_movement" not in master.columns:
+        master["line_movement"] = np.nan  # safety fallback only
 
     # ------------------------------------------------------------------ #
     # 10. CLEAN UP & VALIDATE                                              #
@@ -276,6 +289,16 @@ def _assemble_wide(games_df: pd.DataFrame, log: pd.DataFrame) -> pd.DataFrame:
     odds_cols = [c for c in [
         "home_implied_prob_close", "away_implied_prob_close",
         "home_spread_close", "market_elo_diff", "has_market_odds",
+        # Phase 1: cross-book Pinnacle vs soft books sharp signal
+        "sharp_signal_home", "book_consensus_std",
+        # Phase 2: true line movement (Pinnacle close vs nba_odds_2007_2024 open)
+        "spread_movement_pts", "open_implied_prob_home", "line_movement",
+    ] if c in games_df.columns]
+
+    # Phase 2 game-level matchup features
+    h2h_cols = [c for c in [
+        "h2h_home_win_rate_10", "h2h_home_pts_diff_10",
+        "home_court_strength_home", "home_court_strength_away",
     ] if c in games_df.columns]
 
     base = games_df[[
@@ -289,7 +312,7 @@ def _assemble_wide(games_df: pd.DataFrame, log: pd.DataFrame) -> pd.DataFrame:
         # Pre-game style (built from rolling historical features)
         "pace_home", "pace_away", "pace_difference",
         "shooting_pct_home", "shooting_pct_away", "shooting_pct_diff",
-    ] + ranking_cols + odds_cols].copy()
+    ] + ranking_cols + odds_cols + h2h_cols].copy()
 
     base = base.rename(columns={
         "GAME_ID":          "game_id",

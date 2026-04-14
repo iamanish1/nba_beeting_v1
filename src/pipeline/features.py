@@ -660,7 +660,183 @@ def add_ranking_features(games_df: pd.DataFrame,
 
 
 # ============================================================================
-# STEP 7 — Pace & style features (game-level, from games_df)
+# STEP 7 — Head-to-head (H2H) matchup features (game-level)
+# ============================================================================
+
+def add_h2h_features(games_df: pd.DataFrame) -> pd.DataFrame:
+    """
+    Compute head-to-head rolling features between each specific team pair.
+
+    For each game, looks back at the last N meetings between the home team
+    and away team (regardless of venue) and computes:
+
+        h2h_home_win_rate_10  — home team's win rate vs THIS opponent, last 10 meetings
+        h2h_pts_diff_10       — avg scoring margin from home team's perspective, last 10
+
+    Why this matters:
+        Overall rolling stats treat all opponents equally.  Some teams have
+        persistent stylistic advantages against specific opponents — e.g.
+        fast-paced teams demolish slow-paced teams historically regardless of
+        their overall ratings.  H2H captures these matchup effects directly.
+
+    No-leakage guarantee:
+        For each game, we only look at meetings STRICTLY BEFORE the game date.
+        Implemented via sort + groupby + shift(1) + rolling, identical to all
+        other rolling features in this pipeline.
+
+    Implementation:
+        1. Build a (team_pair, date) sorted DataFrame using a canonical pair key
+           so home=A vs away=B and home=B vs away=A both map to the same group.
+        2. Track each game's result from A's perspective (using canonical_home flag).
+        3. shift(1) + rolling — same no-leakage pattern as _rolling().
+        4. Merge back onto games_df.
+
+    Coverage:
+        Games with fewer than 3 prior H2H meetings get NaN (min_periods=3).
+        Typical NBA team pair meets 2-4 times per season so full windows
+        warm up after 3-5 seasons (~2006+).
+    """
+    df = games_df.copy().sort_values("GAME_DATE_EST").reset_index(drop=True)
+
+    # ── Build a long-format H2H log ──────────────────────────────────────────
+    # For each game produce TWO rows — one per team — each holding the
+    # result and margin FROM THAT TEAM'S PERSPECTIVE.
+    h2h_home = df[[
+        "GAME_ID", "GAME_DATE_EST",
+        "HOME_TEAM_ID", "VISITOR_TEAM_ID",
+        "HOME_TEAM_WINS",
+        "PTS_home", "PTS_away",
+    ]].copy()
+    h2h_home = h2h_home.rename(columns={
+        "HOME_TEAM_ID":    "team_id",
+        "VISITOR_TEAM_ID": "opponent_id",
+        "HOME_TEAM_WINS":  "team_won",
+    })
+    h2h_home["pts_diff"] = h2h_home["PTS_home"] - h2h_home["PTS_away"]
+
+    h2h_away = df[[
+        "GAME_ID", "GAME_DATE_EST",
+        "VISITOR_TEAM_ID", "HOME_TEAM_ID",
+        "HOME_TEAM_WINS",
+        "PTS_home", "PTS_away",
+    ]].copy()
+    h2h_away = h2h_away.rename(columns={
+        "VISITOR_TEAM_ID": "team_id",
+        "HOME_TEAM_ID":    "opponent_id",
+        "HOME_TEAM_WINS":  "team_won",
+    })
+    h2h_away["team_won"] = 1 - h2h_away["team_won"]   # away wins when home lost
+    h2h_away["pts_diff"] = h2h_away["PTS_away"] - h2h_away["PTS_home"]
+
+    h2h_log = pd.concat(
+        [h2h_home[["GAME_ID","GAME_DATE_EST","team_id","opponent_id","team_won","pts_diff"]],
+         h2h_away[["GAME_ID","GAME_DATE_EST","team_id","opponent_id","team_won","pts_diff"]]],
+        ignore_index=True,
+    )
+    h2h_log = h2h_log.sort_values(["team_id", "opponent_id", "GAME_DATE_EST"])
+
+    # ── Rolling H2H stats — grouped by (team, opponent) pair ─────────────────
+    # shift(1): exclude the current game (same leakage-prevention rule as _rolling)
+    # min_periods=3: require at least 3 prior meetings before emitting a value
+    grp = h2h_log.groupby(["team_id", "opponent_id"])
+
+    h2h_log["h2h_win_rate_10"] = grp["team_won"].transform(
+        lambda x: x.shift(1).rolling(10, min_periods=3).mean()
+    )
+    h2h_log["h2h_pts_diff_10"] = grp["pts_diff"].transform(
+        lambda x: x.shift(1).rolling(10, min_periods=3).mean()
+    )
+
+    h2h_log = h2h_log.drop_duplicates(
+        subset=["GAME_ID", "team_id", "opponent_id"], keep="first"
+    )
+
+    # ── Merge home-team perspective onto games_df ─────────────────────────────
+    home_h2h = (
+        h2h_log[h2h_log["team_id"].isin(df["HOME_TEAM_ID"])][
+            ["GAME_ID", "team_id", "opponent_id", "h2h_win_rate_10", "h2h_pts_diff_10"]
+        ]
+        .rename(columns={
+            "team_id":         "HOME_TEAM_ID",
+            "opponent_id":     "VISITOR_TEAM_ID",
+            "h2h_win_rate_10": "h2h_home_win_rate_10",
+            "h2h_pts_diff_10": "h2h_home_pts_diff_10",
+        })
+    )
+
+    df = df.merge(home_h2h, on=["GAME_ID", "HOME_TEAM_ID", "VISITOR_TEAM_ID"], how="left")
+
+    return df
+
+
+# ============================================================================
+# STEP 8 — Per-team home court advantage (game-level)
+# ============================================================================
+
+def add_home_court_features(games_df: pd.DataFrame) -> pd.DataFrame:
+    """
+    Compute each team's rolling home-court advantage over the past 3 seasons.
+
+    NBA home advantage is NOT uniform:
+        • Denver (altitude) historically +5-7 pts
+        • Boston / Golden State / Miami = elite home courts
+        • Expansion teams, poor arenas = weaker home advantage
+
+    New columns:
+        home_court_strength_home  — home team's home win % over past 3 seasons
+        home_court_strength_away  — away team's home win % over past 3 seasons
+                                    (proxy for how well they travel when away)
+
+    No-leakage:
+        Uses the same shift(1)-on-season-grouped rolling pattern.
+        The feature for game G in season S uses only seasons S-3 through S-1.
+    """
+    df = games_df.copy().sort_values("GAME_DATE_EST").reset_index(drop=True)
+
+    # ── Season-level home win rates per team ──────────────────────────────────
+    # Home games: team is HOME_TEAM_ID
+    home_games = df[[
+        "HOME_TEAM_ID", "SEASON", "HOME_TEAM_WINS", "GAME_DATE_EST"
+    ]].copy().rename(columns={"HOME_TEAM_ID": "team_id", "HOME_TEAM_WINS": "won"})
+    home_games["venue"] = "home"
+
+    # Build season-level home win rate per team
+    season_home = (
+        home_games.groupby(["team_id", "SEASON"])
+        .agg(season_home_wins=("won", "sum"), season_home_games=("won", "count"))
+        .reset_index()
+    )
+    season_home["season_home_win_pct"] = (
+        season_home["season_home_wins"] / season_home["season_home_games"].clip(lower=1)
+    )
+    season_home = season_home.sort_values(["team_id", "SEASON"])
+
+    # Rolling 3-season average with shift(1) — no current season leakage
+    season_home["home_court_strength"] = (
+        season_home.groupby("team_id")["season_home_win_pct"]
+        .transform(lambda x: x.shift(1).rolling(3, min_periods=1).mean())
+    )
+
+    # ── Merge onto games via SEASON key (pre-game season average) ─────────────
+    home_strength = season_home[["team_id", "SEASON", "home_court_strength"]].rename(
+        columns={"team_id": "HOME_TEAM_ID", "home_court_strength": "home_court_strength_home"}
+    )
+    away_strength = season_home[["team_id", "SEASON", "home_court_strength"]].rename(
+        columns={"team_id": "VISITOR_TEAM_ID", "home_court_strength": "home_court_strength_away"}
+    )
+
+    df = df.merge(home_strength, on=["HOME_TEAM_ID", "SEASON"], how="left")
+    df = df.merge(away_strength, on=["VISITOR_TEAM_ID", "SEASON"], how="left")
+
+    # Fill first season (no prior data) with league average (~0.585)
+    df["home_court_strength_home"] = df["home_court_strength_home"].fillna(0.585)
+    df["home_court_strength_away"] = df["home_court_strength_away"].fillna(0.585)
+
+    return df
+
+
+# ============================================================================
+# STEP 9 — Pace & style features (game-level, from games_df)
 # ============================================================================
 
 def add_game_style_features(games_df: pd.DataFrame,
