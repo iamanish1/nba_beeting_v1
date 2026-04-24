@@ -324,27 +324,23 @@ def _load_opening_lines(data_dir: Path) -> pd.DataFrame:
         open_ml_away   : float      — opening American moneyline for away team
         open_spread_home: float     — opening home point spread (signed, negative=fav)
 
-    Returns DataFrame with columns:
-        GAME_ID            — matched via date + team-pair join
-        line_movement      — close_implied_prob − open_implied_prob
-                             Positive = market moved toward home (sharp-on-home)
-                             Negative = market moved toward away (sharp-on-away)
-        spread_movement_pts— close_spread − open_spread (home perspective, pts)
-                             Negative = home became less favored at close
-        open_implied_prob_home — opening vig-removed home win probability
-
-    Returns empty DataFrame if nba_opening_lines.csv does not exist.
-    Once the file exists (produced by scripts/fetch_opening_lines.py), this
-    function activates automatically — no pipeline changes needed.
+    Returns standardized open/close columns keyed by date + team pair.
+    The caller is responsible for merging this onto GAME_ID and deciding
+    precedence vs. other odds sources.
     """
     path = data_dir / "nba_opening_lines.csv"
     if not path.exists():
         return pd.DataFrame(columns=[
-            "GAME_ID", "line_movement", "spread_movement_pts",
-            "open_implied_prob_home",
+            "game_date", "home_team_id", "away_team_id",
+            "open_home_prob", "open_spread_home",
+            "close_home_prob", "close_spread_home",
         ])
 
-    opening = pd.read_csv(path, parse_dates=["game_date"])
+    parse_cols = ["game_date"]
+    header = pd.read_csv(path, nrows=0)
+    if "ingested_at" in header.columns:
+        parse_cols.append("ingested_at")
+    opening = pd.read_csv(path, parse_dates=parse_cols)
     opening = opening.dropna(subset=["game_date", "home_team_id", "away_team_id"])
     opening["home_team_id"] = opening["home_team_id"].astype(int)
     opening["away_team_id"] = opening["away_team_id"].astype(int)
@@ -364,15 +360,41 @@ def _load_opening_lines(data_dir: Path) -> pd.DataFrame:
         opening["open_home_prob"] = opening["open_spread_home"].apply(spread_to_implied_prob)
     else:
         return pd.DataFrame(columns=[
-            "GAME_ID", "line_movement", "spread_movement_pts",
-            "open_implied_prob_home",
+            "game_date", "home_team_id", "away_team_id",
+            "open_home_prob", "open_spread_home",
+            "close_home_prob", "close_spread_home",
         ])
 
-    return opening[
-        ["game_date", "home_team_id", "away_team_id",
-         "open_home_prob"] + (
-            ["open_spread_home"] if "open_spread_home" in opening.columns else []
+    if "close_ml_home" in opening.columns and "close_ml_away" in opening.columns:
+        close_probs = opening.apply(
+            lambda r: pd.Series(
+                ml_pair_to_novig_prob(r["close_ml_home"], r["close_ml_away"]),
+                index=["close_home_prob", "close_away_prob"],
+            ),
+            axis=1,
         )
+        opening["close_home_prob"] = close_probs["close_home_prob"]
+    elif "close_spread_home" in opening.columns:
+        opening["close_home_prob"] = opening["close_spread_home"].apply(spread_to_implied_prob)
+    else:
+        opening["close_home_prob"] = np.nan
+
+    if "open_spread_home" not in opening.columns:
+        opening["open_spread_home"] = np.nan
+    if "close_spread_home" not in opening.columns:
+        opening["close_spread_home"] = np.nan
+
+    return opening[
+        [
+            "game_date",
+            "home_team_id",
+            "away_team_id",
+            "open_home_prob",
+            "open_spread_home",
+            "close_home_prob",
+            "close_spread_home",
+            *[c for c in ["source", "source_detail", "ingested_at"] if c in opening.columns],
+        ]
     ].copy()
 
 
@@ -500,6 +522,7 @@ def build_odds_features(
     # ── Load odds sources ─────────────────────────────────────────────────
     pinnacle  = _load_pinnacle_odds(base)
     nba_odds  = _load_nba_odds_2007_2024(base)
+    opening_lines = _load_opening_lines(base)
 
     # ── Start with the game index ─────────────────────────────────────────
     result = games_df[["GAME_ID", "GAME_DATE_EST",
@@ -511,6 +534,8 @@ def build_odds_features(
     result["away_implied_prob_close"] = np.nan
     result["home_spread_close"]       = np.nan
     result["_odds_source"]            = "elo_fallback"
+    result["market_source"]           = "elo_fallback"
+    result["opening_source"]          = np.nan
 
     # ── Merge source 1: Pinnacle (game_id) ───────────────────────────────
     if not pinnacle.empty:
@@ -530,6 +555,7 @@ def build_odds_features(
         result.loc[mask, "away_implied_prob_close"] = result.loc[mask, "_p_away"]
         result.loc[mask, "home_spread_close"]       = result.loc[mask, "_p_spread"]
         result.loc[mask, "_odds_source"]            = result.loc[mask, "_p_src"]
+        result.loc[mask, "market_source"]           = result.loc[mask, "_p_src"]
         result = result.drop(columns=["_p_home", "_p_away", "_p_spread", "_p_src"])
 
     # ── Merge source 2 & 3: nba_odds_2007_2024 (date + teams) ───────────
@@ -571,6 +597,7 @@ def build_odds_features(
         result.loc[mask, "away_implied_prob_close"] = result.loc[mask, "_o_away"]
         result.loc[mask, "home_spread_close"]       = result.loc[mask, "_o_spread"]
         result.loc[mask, "_odds_source"]            = result.loc[mask, "_o_src"]
+        result.loc[mask, "market_source"]           = result.loc[mask, "_o_src"]
 
         # Also fill spread where moneyline came from Pinnacle
         spread_missing = result["home_spread_close"].isna() & result["_o_spread"].notna()
@@ -581,11 +608,65 @@ def build_odds_features(
         result["open_implied_prob_home"] = np.nan
         result["_open_spread_nba"]       = np.nan
 
+    # ── Canonical opening-lines file: prefer when available ───────────────
+    if not opening_lines.empty:
+        opening_keyed = opening_lines.rename(columns={
+            "game_date": "_date",
+            "home_team_id": "HOME_TEAM_ID",
+            "away_team_id": "VISITOR_TEAM_ID",
+            "open_home_prob": "_ol_open_home",
+            "open_spread_home": "_ol_open_spread",
+            "close_home_prob": "_ol_close_home",
+            "close_spread_home": "_ol_close_spread",
+        })
+        opening_keyed["_date"] = pd.to_datetime(opening_keyed["_date"])
+        opening_keyed = opening_keyed.drop_duplicates(
+            subset=["_date", "HOME_TEAM_ID", "VISITOR_TEAM_ID"],
+            keep="first",
+        )
+
+        result = result.merge(
+            opening_keyed[
+                [
+                    "_date",
+                    "HOME_TEAM_ID",
+                    "VISITOR_TEAM_ID",
+                    "_ol_open_home",
+                    "_ol_open_spread",
+                    "_ol_close_home",
+                    "_ol_close_spread",
+                    *[c for c in ["source", "source_detail", "ingested_at"] if c in opening_keyed.columns],
+                ]
+            ],
+            on=["_date", "HOME_TEAM_ID", "VISITOR_TEAM_ID"],
+            how="left",
+        )
+
+        result["open_implied_prob_home"] = result["_ol_open_home"].combine_first(result["open_implied_prob_home"])
+        result["_open_spread_nba"] = result["_ol_open_spread"].combine_first(result["_open_spread_nba"])
+        if "source" in opening_keyed.columns:
+            result["opening_source"] = result["source"].combine_first(result["opening_source"])
+
+        close_mask = result["_ol_close_home"].notna() & result["home_implied_prob_close"].isna()
+        result.loc[close_mask, "home_implied_prob_close"] = result.loc[close_mask, "_ol_close_home"]
+        result.loc[close_mask, "away_implied_prob_close"] = 1.0 - result.loc[close_mask, "_ol_close_home"]
+        result.loc[close_mask, "_odds_source"] = "opening_lines_close"
+        result.loc[close_mask, "market_source"] = "opening_lines_close"
+
+        close_spread_mask = result["home_spread_close"].isna() & result["_ol_close_spread"].notna()
+        result.loc[close_spread_mask, "home_spread_close"] = result.loc[close_spread_mask, "_ol_close_spread"]
+    else:
+        result["_ol_open_home"] = np.nan
+        result["_ol_open_spread"] = np.nan
+        result["_ol_close_home"] = np.nan
+        result["_ol_close_spread"] = np.nan
+
     # ── Source 4: ELO fallback for remaining games ───────────────────────
     elo_mask = result["home_implied_prob_close"].isna()
     result.loc[elo_mask, "home_implied_prob_close"] = result.loc[elo_mask, "implied_prob_home"]
     result.loc[elo_mask, "away_implied_prob_close"] = 1.0 - result.loc[elo_mask, "implied_prob_home"]
     result.loc[elo_mask, "_odds_source"] = "elo_fallback"
+    result.loc[elo_mask, "market_source"] = "elo_fallback"
 
     # ── Derived features ──────────────────────────────────────────────────
     result["market_elo_diff"] = (
@@ -616,25 +697,33 @@ def build_odds_features(
     # Valid ONLY when closing = Pinnacle Sports (2006-2017).
     # For 2018+ games, both "closing" and "opening" come from nba_odds_2007_2024
     # (the same file) so the difference would be spuriously zero — set NaN instead.
+    canonical_lm_mask = result["_ol_close_home"].notna() & result["open_implied_prob_home"].notna()
     pinnacle_close_mask = (
-        (result["_odds_source"] == "pinnacle")
+        ~canonical_lm_mask
+        & (result["_odds_source"] == "pinnacle")
         & result["open_implied_prob_home"].notna()
     )
     result["line_movement"] = np.where(
-        pinnacle_close_mask,
+        canonical_lm_mask | pinnacle_close_mask,
         result["home_implied_prob_close"] - result["open_implied_prob_home"],
         np.nan,
     )
 
     # spread_movement_pts: Pinnacle closing spread − nba_odds opening spread
     result["spread_movement_pts"] = np.where(
-        pinnacle_close_mask
+        (canonical_lm_mask | pinnacle_close_mask)
         & result["home_spread_close"].notna()
         & result["_open_spread_nba"].notna(),
         result["home_spread_close"] - result["_open_spread_nba"],
         np.nan,
     )
-    result = result.drop(columns=["_open_spread_nba"])
+    result = result.drop(columns=[
+        "_open_spread_nba",
+        "_ol_open_home",
+        "_ol_open_spread",
+        "_ol_close_home",
+        "_ol_close_spread",
+    ])
 
     n_lm = int(result["line_movement"].notna().sum())
     import warnings as _w
@@ -657,5 +746,7 @@ def build_odds_features(
         "open_implied_prob_home",
         "spread_movement_pts",
         "line_movement",
+        "market_source",
+        "opening_source",
     ]
     return result[[c for c in out_cols if c in result.columns]].copy()

@@ -64,6 +64,7 @@ from typing import Optional
 from .ingest   import load_all
 from .elo      import compute_elo, compute_elo_rolling_five
 from .odds     import build_odds_features
+from .pregame  import build_external_pregame_features, compute_local_lineup_impact
 from .features import (
     build_team_game_log,
     compute_possession_stats,
@@ -170,6 +171,16 @@ def build_master_dataset(
     _log("Adding star availability features …", verbose)
     log = add_star_features(log, star_avail)
 
+    _log("Adding local lineup-impact features …", verbose)
+    local_lineup = compute_local_lineup_impact(details, games)
+    if not local_lineup.empty:
+        log = log.merge(local_lineup, on=["game_id", "team_id"], how="left")
+
+    _log("Adding external pregame injury/lineup features …", verbose)
+    external_pregame = build_external_pregame_features(games, data_dir=base)
+    if not external_pregame.empty:
+        log = log.merge(external_pregame, on=["game_id", "team_id"], how="left")
+
     # ------------------------------------------------------------------ #
     # 6. GAME-STYLE FEATURES (game-level, on games_df)                   #
     # ------------------------------------------------------------------ #
@@ -253,6 +264,18 @@ def _assemble_wide(games_df: pd.DataFrame, log: pd.DataFrame) -> pd.DataFrame:
         "player_impact_estimate",
         "player_injury_flag", "injured_count",
         "star_available", "star_count", "star_points_lost", "star_points_lost_missing",
+        # local lineup / injury impact
+        "starters_available", "starters_missing",
+        "top5_minutes_missing", "top3_scorers_missing",
+        "starter_minutes_share_lost", "rotation_minutes_share_lost", "scoring_share_lost",
+        "injury_impact_score", "starter_impact_lost",
+        "lineup_continuity_3", "lineup_continuity_5", "lineup_continuity_10",
+        "returning_starter_count", "expected_starter_stability",
+        # external pregame feeds
+        "questionable_count", "doubtful_count", "out_count",
+        "pregame_injury_impact", "external_injury_reports_present",
+        "confirmed_starters_available", "confirmed_starters_missing",
+        "lineup_confirmation_lag_hours", "external_lineups_present",
         # fatigue — back_to_back_road omitted: always 0 for home team (home=is_home=1)
         "rest_days", "back_to_back", "fatigue_load_index",
         # coaching
@@ -367,6 +390,20 @@ def _validate_and_clean(df: pd.DataFrame) -> pd.DataFrame:
 
     # Cap ELO difference (rare outliers after long win/loss streaks)
     df["elo_difference"] = df["elo_difference"].clip(-400, 400)
+
+    # Head-to-head features are structurally sparse early in league history.
+    # Preserve that information with missing flags, then backfill neutral priors
+    # so we do not discard otherwise valid games.
+    h2h_defaults = {
+        "h2h_home_win_rate_10": 0.5,
+        "h2h_home_pts_diff_10": 0.0,
+    }
+    for col, default in h2h_defaults.items():
+        if col in df.columns:
+            flag_col = f"{col}_missing"
+            if flag_col not in df.columns:
+                df[flag_col] = df[col].isna().astype(int)
+            df[col] = df[col].fillna(default)
 
     # Ensure bool columns are int
     for col in df.select_dtypes("bool").columns:

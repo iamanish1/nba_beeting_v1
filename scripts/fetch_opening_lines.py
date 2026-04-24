@@ -424,6 +424,100 @@ def fetch_odds_api(api_key: str, seasons: list[int]) -> pd.DataFrame:
     return pd.DataFrame(all_rows) if all_rows else pd.DataFrame()
 
 
+def _normalise_home_spread_from_favored(favored: str, spread: float) -> float:
+    if pd.isna(spread):
+        return np.nan
+    return -abs(spread) if str(favored).strip().lower() == "home" else abs(spread)
+
+
+def fetch_local_csv_sources(seasons: list[int]) -> pd.DataFrame:
+    """
+    Standardize local CSV odds files into the canonical opening-lines schema.
+
+    This gives us a reproducible local-first path that works even before any
+    SBRO spreadsheets are downloaded. nba_odds_2007_2024.csv is treated as the
+    opening-line source; odds_data.csv is merged as an optional close snapshot.
+    """
+    season_targets = {s + 1 for s in seasons}
+    merged: pd.DataFrame | None = None
+
+    nba_odds_path = DATA_DIR / "nba_odds_2007_2024.csv"
+    if nba_odds_path.exists():
+        nba = pd.read_csv(nba_odds_path, parse_dates=["date"])
+        nba = nba[nba["season"].isin(season_targets)].copy()
+        nba["home_team_id"] = nba["home"].apply(_name_to_id)
+        nba["away_team_id"] = nba["away"].apply(_name_to_id)
+        nba["open_spread_home"] = nba.apply(
+            lambda r: _normalise_home_spread_from_favored(r["whos_favored"], r["spread"]),
+            axis=1,
+        )
+        merged = nba.rename(
+            columns={
+                "date": "game_date",
+                "moneyline_home": "open_ml_home",
+                "moneyline_away": "open_ml_away",
+            }
+        )[
+            [
+                "game_date",
+                "home_team_id",
+                "away_team_id",
+                "open_ml_home",
+                "open_ml_away",
+                "open_spread_home",
+            ]
+        ]
+        merged["source"] = "local_nba_odds_open"
+
+    odds_data_path = DATA_DIR / "odds_data.csv"
+    if odds_data_path.exists():
+        odds = pd.read_csv(odds_data_path, parse_dates=["date"])
+        odds = odds[(odds["season"].isin(season_targets)) & (odds["home/visitor"] == "vs")].copy()
+        odds["home_team_id"] = odds["team"].apply(_name_to_id)
+        odds["away_team_id"] = odds["opponent"].apply(_name_to_id)
+        close_df = odds.rename(
+            columns={
+                "date": "game_date",
+                "moneyLine": "close_ml_home",
+                "opponentMoneyLine": "close_ml_away",
+                "spread": "close_spread_home",
+            }
+        )[
+            [
+                "game_date",
+                "home_team_id",
+                "away_team_id",
+                "close_ml_home",
+                "close_ml_away",
+                "close_spread_home",
+            ]
+        ]
+        close_df["source_close"] = "local_odds_data_close"
+
+        if merged is None:
+            merged = close_df.rename(columns={"source_close": "source"})
+        else:
+            merged = merged.merge(
+                close_df,
+                on=["game_date", "home_team_id", "away_team_id"],
+                how="outer",
+            )
+            merged["source"] = merged["source"].fillna("")
+            merged["source_close"] = merged["source_close"].fillna("")
+            merged["source"] = (
+                merged["source"] + "|" + merged["source_close"]
+            ).str.strip("|")
+            merged = merged.drop(columns=["source_close"])
+
+    if merged is None:
+        return pd.DataFrame()
+
+    merged = merged.dropna(subset=["game_date", "home_team_id", "away_team_id"])
+    merged["home_team_id"] = merged["home_team_id"].astype(int)
+    merged["away_team_id"] = merged["away_team_id"].astype(int)
+    return merged.sort_values("game_date").reset_index(drop=True)
+
+
 # ── Main ────────────────────────────────────────────────────────────────────
 
 def main():
@@ -444,7 +538,7 @@ Examples:
         help="Season start years (default: 2007-2024)",
     )
     parser.add_argument(
-        "--source", choices=["sbro", "oddsapi", "auto"],
+        "--source", choices=["sbro", "oddsapi", "auto", "localcsv"],
         default="auto",
         help="Data source to use (default: auto = try sbro first)",
     )
@@ -467,7 +561,15 @@ Examples:
 
     df = pd.DataFrame()
 
-    if args.source in ("sbro", "auto"):
+    if args.source in ("localcsv", "auto"):
+        print("Trying local CSV odds sources...")
+        df = fetch_local_csv_sources(args.seasons)
+        if df.empty:
+            print("  Local CSV sources returned no data.")
+        else:
+            print(f"  Local CSVs: {len(df):,} games standardized")
+
+    if df.empty and args.source in ("sbro", "auto"):
         print("Trying sportsbookreviewsonline.com (SBRO)...")
         df = fetch_sbro_local_first(args.seasons)
         if df.empty:
@@ -505,6 +607,9 @@ Examples:
     df = df.sort_values("game_date").reset_index(drop=True)
 
     # ── Save ───────────────────────────────────────────────────────────────
+    if "source_detail" not in df.columns:
+        df["source_detail"] = df["source"]
+    df["ingested_at"] = pd.Timestamp.utcnow().isoformat()
     df.to_csv(output, index=False)
     print()
     print(f"Saved {len(df):,} games to {output}")
