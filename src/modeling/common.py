@@ -45,6 +45,8 @@ DIFF_PAIRS = [
     ("injured_count_home", "injured_count_away"),
     ("coaching_adaptability_score_home", "coaching_adaptability_score_away"),
     ("star_points_lost_home", "star_points_lost_away"),
+    ("star_importance_lost_home", "star_importance_lost_away"),
+    ("star_expected_minutes_lost_home", "star_expected_minutes_lost_away"),
     ("season_pressure_home", "season_pressure_away"),
     ("win_streak_home", "win_streak_away"),
     ("ewm_win_rate_5_home", "ewm_win_rate_5_away"),
@@ -102,6 +104,8 @@ SEMANTIC_MISSING_COLS = [
     "coaching_adaptability_score_away",
     "star_points_lost_home",
     "star_points_lost_away",
+    "star_importance_lost_home",
+    "star_importance_lost_away",
 ]
 
 LOCAL_LINEUP_COLS = [
@@ -159,7 +163,35 @@ EXTERNAL_LINEUP_COLS = [
     "external_lineups_present_away",
 ]
 
-NEW_SIGNAL_FAMILY_COLS = LOCAL_LINEUP_COLS + EXTERNAL_INJURY_COLS + EXTERNAL_LINEUP_COLS
+STAR_REFINED_COLS = [
+    "star_importance_lost_home",
+    "star_importance_lost_away",
+    "star_expected_minutes_lost_home",
+    "star_expected_minutes_lost_away",
+]
+
+INACTIVE_PLACEHOLDER_EXTERNAL_COLS = [
+    "questionable_count_home",
+    "questionable_count_away",
+    "doubtful_count_home",
+    "doubtful_count_away",
+    "out_count_home",
+    "out_count_away",
+    "pregame_injury_impact_home",
+    "pregame_injury_impact_away",
+    "external_injury_reports_present_home",
+    "external_injury_reports_present_away",
+    "confirmed_starters_available_home",
+    "confirmed_starters_available_away",
+    "confirmed_starters_missing_home",
+    "confirmed_starters_missing_away",
+    "lineup_confirmation_lag_hours_home",
+    "lineup_confirmation_lag_hours_away",
+    "external_lineups_present_home",
+    "external_lineups_present_away",
+]
+
+NEW_SIGNAL_FAMILY_COLS = LOCAL_LINEUP_COLS + EXTERNAL_INJURY_COLS + EXTERNAL_LINEUP_COLS + STAR_REFINED_COLS
 
 
 @dataclass
@@ -250,6 +282,78 @@ def build_feature_columns_for_mode(df: pd.DataFrame, mode: str = "all") -> list[
         banned = set(H2H_STRUCTURAL_COLS + H2H_MISSING_FLAG_COLS)
         return [c for c in feature_cols if c not in banned]
     raise ValueError(f"Unknown feature mode: {mode}")
+
+
+def summarize_feature_quality(
+    df: pd.DataFrame,
+    feature_cols: Iterable[str],
+    *,
+    inactive_placeholder_cols: Iterable[str] = (),
+    low_var_threshold: float = 1e-4,
+    max_missing_pct: float = 0.995,
+) -> tuple[list[str], pd.DataFrame]:
+    filtered: list[str] = []
+    rows: list[dict[str, float | int | str | bool]] = []
+    inactive_set = set(inactive_placeholder_cols)
+
+    for col in feature_cols:
+        if col not in df.columns:
+            rows.append(
+                {
+                    "column": col,
+                    "status": "drop",
+                    "reason": "missing_from_frame",
+                    "missing_pct": 1.0,
+                    "nunique": 0,
+                    "variance": np.nan,
+                    "is_placeholder": col in inactive_set,
+                }
+            )
+            continue
+
+        series = df[col]
+        missing_pct = float(series.isna().mean())
+        nunique = int(series.nunique(dropna=True))
+        variance = np.nan
+        try:
+            variance = float(series.var(skipna=True))
+        except Exception:
+            variance = np.nan
+
+        reason = "keep"
+        status = "keep"
+        if col in inactive_set and (series.isna().all() or nunique <= 1 or missing_pct > max_missing_pct):
+            reason = "inactive_placeholder"
+            status = "drop"
+        elif series.isna().all():
+            reason = "all_null"
+            status = "drop"
+        elif nunique <= 1:
+            reason = "constant"
+            status = "drop"
+        elif missing_pct > max_missing_pct and not col.endswith("_missing"):
+            reason = "too_sparse"
+            status = "drop"
+        elif pd.notna(variance) and variance < low_var_threshold:
+            reason = "near_zero_variance"
+            status = "drop"
+
+        rows.append(
+            {
+                "column": col,
+                "status": status,
+                "reason": reason,
+                "missing_pct": missing_pct,
+                "nunique": nunique,
+                "variance": variance,
+                "is_placeholder": col in inactive_set,
+            }
+        )
+        if status == "keep":
+            filtered.append(col)
+
+    diagnostics = pd.DataFrame(rows).sort_values(["status", "reason", "column"]).reset_index(drop=True)
+    return filtered, diagnostics
 
 
 def evaluate_predictions(

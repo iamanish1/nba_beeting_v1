@@ -1,6 +1,6 @@
 {
   "name": "notebook_xgb_baseline",
-  "feature_count": 114,
+  "feature_count": 118,
   "feature_families": [],
   "feature_columns": [
     "elo_home",
@@ -107,6 +107,10 @@
     "season_pressure_diff",
     "win_streak_diff",
     "ewm_win_rate_5_diff",
+    "injury_impact_score_diff",
+    "starter_impact_lost_diff",
+    "lineup_continuity_5_diff",
+    "expected_starter_stability_diff",
     "home_spread_close_missing",
     "sharp_signal_home_missing",
     "book_consensus_std_missing",

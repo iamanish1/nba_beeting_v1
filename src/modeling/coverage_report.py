@@ -37,6 +37,8 @@ def main() -> None:
         "injury_impact_score_away",
         "lineup_continuity_5_home",
         "lineup_continuity_5_away",
+        "star_importance_lost_home",
+        "star_importance_lost_away",
         "pregame_injury_impact_home",
         "pregame_injury_impact_away",
         "confirmed_starters_available_home",
@@ -80,6 +82,47 @@ def main() -> None:
             .reset_index()
         )
         presence.to_csv(output_dir / "pregame_feed_presence.csv", index=False)
+
+    diagnostics_cols = [
+        "questionable_count_home",
+        "questionable_count_away",
+        "doubtful_count_home",
+        "doubtful_count_away",
+        "out_count_home",
+        "out_count_away",
+        "pregame_injury_impact_home",
+        "pregame_injury_impact_away",
+        "external_injury_reports_present_home",
+        "external_injury_reports_present_away",
+        "confirmed_starters_available_home",
+        "confirmed_starters_available_away",
+        "confirmed_starters_missing_home",
+        "confirmed_starters_missing_away",
+        "lineup_confirmation_lag_hours_home",
+        "lineup_confirmation_lag_hours_away",
+        "external_lineups_present_home",
+        "external_lineups_present_away",
+        "star_points_lost_home",
+        "star_points_lost_away",
+        "star_importance_lost_home",
+        "star_importance_lost_away",
+    ]
+    diagnostics_cols = [c for c in diagnostics_cols if c in raw_master.columns]
+    if diagnostics_cols:
+        diag_rows = []
+        for col in diagnostics_cols:
+            series = raw_master[col]
+            diag_rows.append(
+                {
+                    "column": col,
+                    "non_null_pct": float(series.notna().mean()),
+                    "unique_values": int(series.nunique(dropna=True)),
+                    "all_null": bool(series.isna().all()),
+                    "constant_non_null": bool(series.notna().any() and series.nunique(dropna=True) <= 1),
+                    "zero_rate_after_fill": float((series.fillna(0) == 0).mean()),
+                }
+            )
+        pd.DataFrame(diag_rows).to_csv(output_dir / "placeholder_constant_diagnostics.csv", index=False)
 
     print(f"Saved coverage reports to {output_dir}")
 

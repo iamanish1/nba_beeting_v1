@@ -20,10 +20,12 @@ from src.modeling.common import (
     EXTERNAL_LINEUP_COLS,
     H2H_STRUCTURAL_COLS,
     H2H_MISSING_FLAG_COLS,
+    INACTIVE_PLACEHOLDER_EXTERNAL_COLS,
     LOCAL_LINEUP_COLS,
     NEW_SIGNAL_FAMILY_COLS,
     SEMANTIC_MISSING_COLS,
     SPARSE_MARKET_COLS,
+    STAR_REFINED_COLS,
     add_differential_features,
     add_missing_indicators,
     apply_neutral_feature_defaults,
@@ -36,6 +38,7 @@ from src.modeling.common import (
     evaluate_predictions,
     load_master_dataset,
     optimize_threshold,
+    summarize_feature_quality,
 )
 
 try:
@@ -160,10 +163,17 @@ def _fit_and_score_candidate(
         "local_lineup": LOCAL_LINEUP_COLS,
         "external_injury": EXTERNAL_INJURY_COLS,
         "external_lineup": EXTERNAL_LINEUP_COLS,
+        "star_refined": STAR_REFINED_COLS,
         "market_missing_flags": [f"{col}_missing" for col in DENSE_MARKET_COLS + SPARSE_MARKET_COLS],
     }
     for family in feature_families or []:
         feature_cols = list(dict.fromkeys(feature_cols + [c for c in family_map.get(family, []) if c in splits.train.columns]))
+
+    feature_cols, quality_report = summarize_feature_quality(
+        splits.train,
+        feature_cols,
+        inactive_placeholder_cols=INACTIVE_PLACEHOLDER_EXTERNAL_COLS,
+    )
 
     X_train = splits.train[feature_cols].copy()
     y_train = splits.train["home_win"].astype(int)
@@ -252,6 +262,8 @@ def _fit_and_score_candidate(
         "threshold": threshold,
         "feature_columns": feature_cols,
         "feature_families": feature_families or [],
+        "dropped_columns": quality_report[quality_report["status"] == "drop"].to_dict(orient="records"),
+        "feature_quality_report": quality_report.to_dict(orient="records"),
         "valid_metrics": valid_metrics,
         "test_metrics": test_metrics,
         "rolling_metrics_mean": _mean_metrics(fold_rows),
@@ -316,6 +328,21 @@ def main() -> None:
             "extra_features": None,
             "drop_features": None,
             "feature_families": ["market_missing_flags"],
+        },
+        {
+            "name": "baseline_plus_star_impact_refined",
+            "feature_mode": "all",
+            "include_h2h": True,
+            "include_sparse_market": True,
+            "recency_decay": None,
+            "away_bias": True,
+            "threshold_objective": "macro_f1",
+            "feature_strategy": "notebook",
+            "early_stopping_rounds": 60,
+            "eval_with_train": True,
+            "extra_features": None,
+            "drop_features": None,
+            "feature_families": ["star_refined"],
         },
         {
             "name": "baseline_plus_local_lineup_features",
@@ -474,10 +501,28 @@ def main() -> None:
                     "feature_count": row["feature_count"],
                     "feature_families": row.get("feature_families", []),
                     "feature_columns": row.get("feature_columns", []),
+                    "dropped_columns": row.get("dropped_columns", []),
                 },
                 indent=2,
             )
         )
+
+    dropped_rows = []
+    for row in results:
+        for item in row.get("dropped_columns", []):
+            dropped_rows.append(
+                {
+                    "candidate": row["name"],
+                    "column": item.get("column"),
+                    "reason": item.get("reason"),
+                    "missing_pct": item.get("missing_pct"),
+                    "nunique": item.get("nunique"),
+                    "variance": item.get("variance"),
+                    "is_placeholder": item.get("is_placeholder"),
+                }
+            )
+    if dropped_rows:
+        pd.DataFrame(dropped_rows).to_csv(artifacts_dir / "dropped_columns_report.csv", index=False)
 
     baseline = next((row for row in results if row["name"] == "notebook_xgb_baseline"), None)
     promotion_rows = []

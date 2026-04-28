@@ -179,7 +179,8 @@ def compute_star_availability(
     Using prior-season averages avoids leakage.
 
     Returns DataFrame:
-        game_id, team_id, star_available (1/0), star_count, star_points_lost
+        game_id, team_id, star_available (1/0), star_count,
+        star_points_lost, star_importance_lost, star_expected_minutes_lost
     """
     game_seasons = games_df[["GAME_ID", "SEASON"]].copy()
     details = details_df.merge(game_seasons, on="GAME_ID", how="inner")
@@ -189,10 +190,24 @@ def compute_star_availability(
     # to avoid noise from garbage-time appearances inflating averages.
     player_season_avg = (
         details[details["MIN"] > 5]
-        .groupby(["PLAYER_ID", "TEAM_ID", "SEASON"])["PTS"]
-        .agg(["mean", "count"])
+        .assign(started=lambda frame: frame["START_POSITION"].fillna("").astype(str).str.strip().ne("").astype(int))
+        .groupby(["PLAYER_ID", "TEAM_ID", "SEASON"])
+        .agg(
+            avg_pts=("PTS", "mean"),
+            games_played=("PTS", "count"),
+            avg_min=("MIN", "mean"),
+            starts=("started", "sum"),
+        )
         .reset_index()
-        .rename(columns={"mean": "avg_pts", "count": "games_played"})
+    )
+    player_season_avg["start_rate"] = (
+        player_season_avg["starts"] / player_season_avg["games_played"].clip(lower=1)
+    )
+    player_season_avg["importance_score"] = (
+        player_season_avg["avg_pts"] * 0.55
+        + player_season_avg["avg_min"] * 0.35
+        + player_season_avg["games_played"].clip(upper=82) * 0.03
+        + player_season_avg["start_rate"] * 6.0
     )
 
     # Shift season forward by 1: a star in season S is expected in season S+1
@@ -200,6 +215,15 @@ def compute_star_availability(
         (player_season_avg["avg_pts"] >= star_ppg_threshold) &
         (player_season_avg["games_played"] >= 20)   # played enough games to be reliable
     ].copy()
+    if not prior_season_stars.empty:
+        fallback_top = (
+            player_season_avg[player_season_avg["games_played"] >= 20]
+            .sort_values(["importance_score", "avg_pts", "avg_min"], ascending=False)
+            .groupby(["TEAM_ID", "SEASON"])
+            .head(2)
+            .copy()
+        )
+        prior_season_stars = pd.concat([prior_season_stars, fallback_top], ignore_index=True)
     prior_season_stars["SEASON"] = prior_season_stars["SEASON"] + 1
     prior_season_stars = prior_season_stars.drop_duplicates(
         subset=["PLAYER_ID", "TEAM_ID", "SEASON"]
@@ -262,6 +286,12 @@ def compute_star_availability(
     star_game_cross["pts_lost"] = (
         star_game_cross["avg_pts"] * (1 - star_game_cross["star_played"])
     )
+    star_game_cross["importance_lost"] = (
+        star_game_cross["importance_score"] * (1 - star_game_cross["star_played"])
+    )
+    star_game_cross["minutes_lost"] = (
+        star_game_cross["avg_min"] * (1 - star_game_cross["star_played"])
+    )
 
     # ── Step 4: Aggregate to one row per game-team ────────────────────────────
     star_game_agg = (
@@ -271,6 +301,8 @@ def compute_star_availability(
             stars_who_played=("star_played", "sum"),
             total_stars=("PLAYER_ID", "count"),
             star_points_lost=("pts_lost", "sum"),
+            star_importance_lost=("importance_lost", "sum"),
+            star_expected_minutes_lost=("minutes_lost", "sum"),
         )
         .reset_index()
     )
@@ -287,7 +319,15 @@ def compute_star_availability(
             "TEAM_ID": "team_id",
             "stars_who_played": "star_count",
         })
-        [["game_id", "team_id", "star_available", "star_count", "star_points_lost"]]
+        [[
+            "game_id",
+            "team_id",
+            "star_available",
+            "star_count",
+            "star_points_lost",
+            "star_importance_lost",
+            "star_expected_minutes_lost",
+        ]]
         .drop_duplicates(subset=["game_id", "team_id"])
         .reset_index(drop=True)
     )
@@ -572,6 +612,8 @@ def add_star_features(log: pd.DataFrame,
     """
     df = log.merge(star_availability, on=["game_id", "team_id"], how="left")
     df["star_points_lost_missing"] = df["star_points_lost"].isna().astype(int)
+    if "star_importance_lost" in df.columns:
+        df["star_importance_lost_missing"] = df["star_importance_lost"].isna().astype(int)
     df["star_available"]    = df["star_available"].fillna(1).astype(int)   # default: available
     df["star_count"]        = df["star_count"].fillna(0).astype(int)
     return df

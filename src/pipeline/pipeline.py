@@ -264,6 +264,7 @@ def _assemble_wide(games_df: pd.DataFrame, log: pd.DataFrame) -> pd.DataFrame:
         "player_impact_estimate",
         "player_injury_flag", "injured_count",
         "star_available", "star_count", "star_points_lost", "star_points_lost_missing",
+        "star_importance_lost", "star_importance_lost_missing", "star_expected_minutes_lost",
         # local lineup / injury impact
         "starters_available", "starters_missing",
         "top5_minutes_missing", "top3_scorers_missing",

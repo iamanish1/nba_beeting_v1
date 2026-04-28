@@ -1,6 +1,6 @@
 {
   "name": "baseline_plus_market_coverage_fix",
-  "feature_count": 116,
+  "feature_count": 120,
   "feature_families": [
     "market_missing_flags"
   ],
@@ -109,6 +109,10 @@
     "season_pressure_diff",
     "win_streak_diff",
     "ewm_win_rate_5_diff",
+    "injury_impact_score_diff",
+    "starter_impact_lost_diff",
+    "lineup_continuity_5_diff",
+    "expected_starter_stability_diff",
     "home_spread_close_missing",
     "sharp_signal_home_missing",
     "book_consensus_std_missing",

@@ -1,6 +1,6 @@
 {
   "name": "baseline_plus_external_injury_features",
-  "feature_count": 114,
+  "feature_count": 128,
   "feature_families": [
     "external_injury"
   ],
@@ -109,6 +109,10 @@
     "season_pressure_diff",
     "win_streak_diff",
     "ewm_win_rate_5_diff",
+    "injury_impact_score_diff",
+    "starter_impact_lost_diff",
+    "lineup_continuity_5_diff",
+    "expected_starter_stability_diff",
     "home_spread_close_missing",
     "sharp_signal_home_missing",
     "book_consensus_std_missing",
@@ -118,6 +122,16 @@
     "coaching_adaptability_score_home_missing",
     "coaching_adaptability_score_away_missing",
     "star_points_lost_home_missing",
-    "star_points_lost_away_missing"
+    "star_points_lost_away_missing",
+    "questionable_count_home",
+    "questionable_count_away",
+    "doubtful_count_home",
+    "doubtful_count_away",
+    "out_count_home",
+    "out_count_away",
+    "pregame_injury_impact_home",
+    "pregame_injury_impact_away",
+    "external_injury_reports_present_home",
+    "external_injury_reports_present_away"
   ]
 }
