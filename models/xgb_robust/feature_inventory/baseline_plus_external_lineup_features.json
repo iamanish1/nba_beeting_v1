@@ -1,6 +1,6 @@
 {
   "name": "baseline_plus_external_lineup_features",
-  "feature_count": 126,
+  "feature_count": 124,
   "feature_families": [
     "external_lineup"
   ],
@@ -58,6 +58,7 @@
     "star_count_home",
     "star_points_lost_home",
     "star_points_lost_missing_home",
+    "star_importance_lost_missing_home",
     "rest_days_home",
     "back_to_back_home",
     "fatigue_load_index_home",
@@ -86,6 +87,7 @@
     "star_count_away",
     "star_points_lost_away",
     "star_points_lost_missing_away",
+    "star_importance_lost_missing_away",
     "rest_days_away",
     "back_to_back_away",
     "fatigue_load_index_away",
@@ -106,6 +108,8 @@
     "injured_count_diff",
     "coaching_adaptability_score_diff",
     "star_points_lost_diff",
+    "star_importance_lost_diff",
+    "star_expected_minutes_lost_diff",
     "season_pressure_diff",
     "win_streak_diff",
     "ewm_win_rate_5_diff",
@@ -123,13 +127,81 @@
     "coaching_adaptability_score_away_missing",
     "star_points_lost_home_missing",
     "star_points_lost_away_missing",
-    "confirmed_starters_available_home",
-    "confirmed_starters_available_away",
-    "confirmed_starters_missing_home",
-    "confirmed_starters_missing_away",
-    "lineup_confirmation_lag_hours_home",
-    "lineup_confirmation_lag_hours_away",
-    "external_lineups_present_home",
-    "external_lineups_present_away"
+    "star_importance_lost_home_missing",
+    "star_importance_lost_away_missing"
+  ],
+  "dropped_columns": [
+    {
+      "column": "confirmed_starters_available_away",
+      "status": "drop",
+      "reason": "inactive_placeholder",
+      "missing_pct": 0.0,
+      "nunique": 1,
+      "variance": 0.0,
+      "is_placeholder": true
+    },
+    {
+      "column": "confirmed_starters_available_home",
+      "status": "drop",
+      "reason": "inactive_placeholder",
+      "missing_pct": 0.0,
+      "nunique": 1,
+      "variance": 0.0,
+      "is_placeholder": true
+    },
+    {
+      "column": "confirmed_starters_missing_away",
+      "status": "drop",
+      "reason": "inactive_placeholder",
+      "missing_pct": 0.0,
+      "nunique": 1,
+      "variance": 0.0,
+      "is_placeholder": true
+    },
+    {
+      "column": "confirmed_starters_missing_home",
+      "status": "drop",
+      "reason": "inactive_placeholder",
+      "missing_pct": 0.0,
+      "nunique": 1,
+      "variance": 0.0,
+      "is_placeholder": true
+    },
+    {
+      "column": "external_lineups_present_away",
+      "status": "drop",
+      "reason": "inactive_placeholder",
+      "missing_pct": 0.0,
+      "nunique": 1,
+      "variance": 0.0,
+      "is_placeholder": true
+    },
+    {
+      "column": "external_lineups_present_home",
+      "status": "drop",
+      "reason": "inactive_placeholder",
+      "missing_pct": 0.0,
+      "nunique": 1,
+      "variance": 0.0,
+      "is_placeholder": true
+    },
+    {
+      "column": "lineup_confirmation_lag_hours_away",
+      "status": "drop",
+      "reason": "inactive_placeholder",
+      "missing_pct": 1.0,
+      "nunique": 0,
+      "variance": NaN,
+      "is_placeholder": true
+    },
+    {
+      "column": "lineup_confirmation_lag_hours_home",
+      "status": "drop",
+      "reason": "inactive_placeholder",
+      "missing_pct": 1.0,
+      "nunique": 0,
+      "variance": NaN,
+      "is_placeholder": true
+    }
   ]
 }

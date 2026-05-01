@@ -1,6 +1,6 @@
 {
   "name": "notebook_xgb_baseline",
-  "feature_count": 118,
+  "feature_count": 124,
   "feature_families": [],
   "feature_columns": [
     "elo_home",
@@ -56,6 +56,7 @@
     "star_count_home",
     "star_points_lost_home",
     "star_points_lost_missing_home",
+    "star_importance_lost_missing_home",
     "rest_days_home",
     "back_to_back_home",
     "fatigue_load_index_home",
@@ -84,6 +85,7 @@
     "star_count_away",
     "star_points_lost_away",
     "star_points_lost_missing_away",
+    "star_importance_lost_missing_away",
     "rest_days_away",
     "back_to_back_away",
     "fatigue_load_index_away",
@@ -104,6 +106,8 @@
     "injured_count_diff",
     "coaching_adaptability_score_diff",
     "star_points_lost_diff",
+    "star_importance_lost_diff",
+    "star_expected_minutes_lost_diff",
     "season_pressure_diff",
     "win_streak_diff",
     "ewm_win_rate_5_diff",
@@ -120,6 +124,9 @@
     "coaching_adaptability_score_home_missing",
     "coaching_adaptability_score_away_missing",
     "star_points_lost_home_missing",
-    "star_points_lost_away_missing"
-  ]
+    "star_points_lost_away_missing",
+    "star_importance_lost_home_missing",
+    "star_importance_lost_away_missing"
+  ],
+  "dropped_columns": []
 }

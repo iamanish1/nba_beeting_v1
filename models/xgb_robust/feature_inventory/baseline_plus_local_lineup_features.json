@@ -1,6 +1,6 @@
 {
   "name": "baseline_plus_local_lineup_features",
-  "feature_count": 146,
+  "feature_count": 152,
   "feature_families": [
     "local_lineup"
   ],
@@ -58,6 +58,7 @@
     "star_count_home",
     "star_points_lost_home",
     "star_points_lost_missing_home",
+    "star_importance_lost_missing_home",
     "rest_days_home",
     "back_to_back_home",
     "fatigue_load_index_home",
@@ -86,6 +87,7 @@
     "star_count_away",
     "star_points_lost_away",
     "star_points_lost_missing_away",
+    "star_importance_lost_missing_away",
     "rest_days_away",
     "back_to_back_away",
     "fatigue_load_index_away",
@@ -106,6 +108,8 @@
     "injured_count_diff",
     "coaching_adaptability_score_diff",
     "star_points_lost_diff",
+    "star_importance_lost_diff",
+    "star_expected_minutes_lost_diff",
     "season_pressure_diff",
     "win_streak_diff",
     "ewm_win_rate_5_diff",
@@ -123,6 +127,8 @@
     "coaching_adaptability_score_away_missing",
     "star_points_lost_home_missing",
     "star_points_lost_away_missing",
+    "star_importance_lost_home_missing",
+    "star_importance_lost_away_missing",
     "starters_available_home",
     "starters_available_away",
     "starters_missing_home",
@@ -151,5 +157,6 @@
     "returning_starter_count_away",
     "expected_starter_stability_home",
     "expected_starter_stability_away"
-  ]
+  ],
+  "dropped_columns": []
 }

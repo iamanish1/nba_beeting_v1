@@ -1,6 +1,6 @@
 {
   "name": "baseline_plus_external_injury_features",
-  "feature_count": 128,
+  "feature_count": 124,
   "feature_families": [
     "external_injury"
   ],
@@ -58,6 +58,7 @@
     "star_count_home",
     "star_points_lost_home",
     "star_points_lost_missing_home",
+    "star_importance_lost_missing_home",
     "rest_days_home",
     "back_to_back_home",
     "fatigue_load_index_home",
@@ -86,6 +87,7 @@
     "star_count_away",
     "star_points_lost_away",
     "star_points_lost_missing_away",
+    "star_importance_lost_missing_away",
     "rest_days_away",
     "back_to_back_away",
     "fatigue_load_index_away",
@@ -106,6 +108,8 @@
     "injured_count_diff",
     "coaching_adaptability_score_diff",
     "star_points_lost_diff",
+    "star_importance_lost_diff",
+    "star_expected_minutes_lost_diff",
     "season_pressure_diff",
     "win_streak_diff",
     "ewm_win_rate_5_diff",
@@ -123,15 +127,99 @@
     "coaching_adaptability_score_away_missing",
     "star_points_lost_home_missing",
     "star_points_lost_away_missing",
-    "questionable_count_home",
-    "questionable_count_away",
-    "doubtful_count_home",
-    "doubtful_count_away",
-    "out_count_home",
-    "out_count_away",
-    "pregame_injury_impact_home",
-    "pregame_injury_impact_away",
-    "external_injury_reports_present_home",
-    "external_injury_reports_present_away"
+    "star_importance_lost_home_missing",
+    "star_importance_lost_away_missing"
+  ],
+  "dropped_columns": [
+    {
+      "column": "doubtful_count_away",
+      "status": "drop",
+      "reason": "inactive_placeholder",
+      "missing_pct": 0.0,
+      "nunique": 1,
+      "variance": 0.0,
+      "is_placeholder": true
+    },
+    {
+      "column": "doubtful_count_home",
+      "status": "drop",
+      "reason": "inactive_placeholder",
+      "missing_pct": 0.0,
+      "nunique": 1,
+      "variance": 0.0,
+      "is_placeholder": true
+    },
+    {
+      "column": "external_injury_reports_present_away",
+      "status": "drop",
+      "reason": "inactive_placeholder",
+      "missing_pct": 0.0,
+      "nunique": 1,
+      "variance": 0.0,
+      "is_placeholder": true
+    },
+    {
+      "column": "external_injury_reports_present_home",
+      "status": "drop",
+      "reason": "inactive_placeholder",
+      "missing_pct": 0.0,
+      "nunique": 1,
+      "variance": 0.0,
+      "is_placeholder": true
+    },
+    {
+      "column": "out_count_away",
+      "status": "drop",
+      "reason": "inactive_placeholder",
+      "missing_pct": 0.0,
+      "nunique": 1,
+      "variance": 0.0,
+      "is_placeholder": true
+    },
+    {
+      "column": "out_count_home",
+      "status": "drop",
+      "reason": "inactive_placeholder",
+      "missing_pct": 0.0,
+      "nunique": 1,
+      "variance": 0.0,
+      "is_placeholder": true
+    },
+    {
+      "column": "pregame_injury_impact_away",
+      "status": "drop",
+      "reason": "inactive_placeholder",
+      "missing_pct": 0.0,
+      "nunique": 1,
+      "variance": 0.0,
+      "is_placeholder": true
+    },
+    {
+      "column": "pregame_injury_impact_home",
+      "status": "drop",
+      "reason": "inactive_placeholder",
+      "missing_pct": 0.0,
+      "nunique": 1,
+      "variance": 0.0,
+      "is_placeholder": true
+    },
+    {
+      "column": "questionable_count_away",
+      "status": "drop",
+      "reason": "inactive_placeholder",
+      "missing_pct": 0.0,
+      "nunique": 1,
+      "variance": 0.0,
+      "is_placeholder": true
+    },
+    {
+      "column": "questionable_count_home",
+      "status": "drop",
+      "reason": "inactive_placeholder",
+      "missing_pct": 0.0,
+      "nunique": 1,
+      "variance": 0.0,
+      "is_placeholder": true
+    }
   ]
 }

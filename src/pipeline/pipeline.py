@@ -366,6 +366,8 @@ def _validate_and_clean(df: pd.DataFrame) -> pd.DataFrame:
     - Drop rows where target is null
     - Drop games with insufficient history (first 10 games of any team's season)
       identified by last_10_win_rate being NaN for the home team
+    - Drop constant feature columns (zero information value)
+    - Fill all remaining NaN values with sensible defaults
     - Cap extreme values
     - Reorder columns logically
     """
@@ -376,8 +378,6 @@ def _validate_and_clean(df: pd.DataFrame) -> pd.DataFrame:
     df = df.dropna(subset=["last_10_win_rate_home", "last_10_win_rate_away"])
 
     # ── Safety deduplication ─────────────────────────────────────────────────
-    # game_id must be unique (one row per game). If duplicates exist, keep the
-    # first occurrence — they are identical rows caused by upstream fan-out joins.
     before = len(df)
     df = df.drop_duplicates(subset=["game_id"], keep="first")
     after = len(df)
@@ -393,8 +393,6 @@ def _validate_and_clean(df: pd.DataFrame) -> pd.DataFrame:
     df["elo_difference"] = df["elo_difference"].clip(-400, 400)
 
     # Head-to-head features are structurally sparse early in league history.
-    # Preserve that information with missing flags, then backfill neutral priors
-    # so we do not discard otherwise valid games.
     h2h_defaults = {
         "h2h_home_win_rate_10": 0.5,
         "h2h_home_pts_diff_10": 0.0,
@@ -409,6 +407,52 @@ def _validate_and_clean(df: pd.DataFrame) -> pd.DataFrame:
     # Ensure bool columns are int
     for col in df.select_dtypes("bool").columns:
         df[col] = df[col].astype(int)
+
+    # ── Drop constant feature columns ────────────────────────────────────────
+    # Columns with a single unique value (including all-NaN columns) carry no
+    # signal and should not be passed to the model.
+    meta_cols = {"game_id", "game_date", "season", "home_team_id", "away_team_id", "home_win"}
+    constant_cols = [
+        col for col in df.columns
+        if col not in meta_cols and df[col].nunique(dropna=False) <= 1
+    ]
+    if constant_cols:
+        df = df.drop(columns=constant_cols)
+
+    # ── Fill remaining NaN values ────────────────────────────────────────────
+    # Each group of features gets a domain-appropriate default so the dataset
+    # is fully dense for training (no silent NaN leakage into models).
+    _NAN_FILLS = {
+        # Betting market: sparse by data availability — neutral priors
+        "prob":            0.5,   # implied probability columns → neutral 50%
+        "spread":          0.0,   # spread columns → no spread (even game)
+        "movement":        0.0,   # line/spread movement → no movement
+        "signal":          0.0,   # sharp money signal → no signal
+        "consensus":       0.0,   # book consensus std → no dispersion
+        # Star / injury impact: NaN means no star information → no impact
+        "star_points":     0.0,
+        "star_importance": 0.0,
+        "star_expected":   0.0,
+        # Lineup continuity: NaN = no prior data → assume full continuity
+        "lineup_continuity": 1.0,
+        "expected_starter":  1.0,
+    }
+    # Apply keyword-based fills first
+    for keyword, fill_val in _NAN_FILLS.items():
+        for col in df.columns:
+            if keyword in col and df[col].isnull().any():
+                df[col] = df[col].fillna(fill_val)
+
+    # Remaining NaN columns: numeric impact/count features → 0, coaching → median
+    for col in df.columns:
+        if not df[col].isnull().any():
+            continue
+        if "coaching" in col:
+            df[col] = df[col].fillna(df[col].median())
+        elif pd.api.types.is_numeric_dtype(df[col]):
+            df[col] = df[col].fillna(0.0)
+        else:
+            df[col] = df[col].fillna(df[col].mode()[0] if not df[col].mode().empty else "")
 
     # Sort by date
     df = df.sort_values("game_date").reset_index(drop=True)
